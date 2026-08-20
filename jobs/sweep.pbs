@@ -16,24 +16,35 @@ set -uo pipefail
 cd "${PBS_O_WORKDIR:-$PWD}"
 REPO="${TCPERF_ROOT:-$PBS_O_WORKDIR}"
 
-RPN="${RPN:-12}"
 REPEATS="${REPEATS:-2}"          # >=2: one run tells you nothing about noise
 COLLECTIVES="${COLLECTIVES:-all_reduce all_gather_single reduce_scatter_single all_to_all_single}"
+
+# Scale ladder. Do not skip rungs -- each catches a different failure:
+#   2   ranks/node  basic correctness, and the layout where the pre-patch
+#                   device-binding bug was WRONG (so it also regression-tests
+#                   patch 0001)
+#   12  ranks/node  full node, intra-node tiles
+# With select=2 the 12-rpn rung also exercises the inter-node fabric.
+RUNGS="${RUNGS:-2 12}"
+[ -n "${RPN:-}" ] && RUNGS="$RPN"     # RPN=N pins a single rung
 
 "$REPO/bin/tc-perf-doctor" || true
 
 for rep in $(seq 1 "$REPEATS"); do
-    for coll in $COLLECTIVES; do
-        echo "########## rep $rep/$REPEATS  $coll ##########"
-        # --sync-interval 1 gives per-iteration min/max, so the spread is
-        # visible. At 0 the harness reports min==max==avg, which hides it.
-        "$REPO/bin/tc-perf-run" \
-            --rpn "$RPN" \
-            --collective "$coll" \
-            --min-size 1024 --max-size 67108864 \
-            --iters 100 --warmup 50 \
-            --sync-interval 1 \
-            --tag "sweep-rep${rep}"
+    for rpn in $RUNGS; do
+        for coll in $COLLECTIVES; do
+            echo "########## rep $rep/$REPEATS  rpn=$rpn  $coll ##########"
+            # --sync-interval 1 gives per-iteration min/max, so the spread is
+            # visible. At 0 the harness reports min==max==avg, which hides it.
+            # --warmup 50 keeps first-touch init cost out of the 1 KiB point.
+            "$REPO/bin/tc-perf-run" \
+                --rpn "$rpn" \
+                --collective "$coll" \
+                --min-size 1024 --max-size 67108864 \
+                --iters 100 --warmup 50 \
+                --sync-interval 1 \
+                --tag "sweep-rep${rep}"
+        done
     done
 done
 
