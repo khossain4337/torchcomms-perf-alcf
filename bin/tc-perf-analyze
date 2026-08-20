@@ -1,0 +1,55 @@
+#!/bin/bash
+# tc-perf-analyze — wrapper around upstream's analyze_perf.py.
+#
+#   tc-perf-analyze <results-dir> [--baseline c10d] [extra analyze_perf args]
+#
+# Upstream wants one `--dir label:path` per adapter and defaults its output to
+# the script's own directory (i.e. inside perf_standalone/, where it does not
+# belong). This discovers the adapter subdirectories tc-perf-run created,
+# builds the --dir list, and parks the output under the results dir.
+#
+# analyze_perf.py imports only argparse/pathlib/matplotlib/pandas — no torch,
+# no torchcomms — so this step runs anywhere, including a laptop with the CSVs
+# copied over. Use --summary-only if matplotlib is unavailable.
+
+set -euo pipefail
+
+TCPERF_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../sites/common.sh
+. "$TCPERF_ROOT/sites/common.sh"
+
+[ $# -ge 1 ] || { sed -n '2,15p' "$0"; exit 2; }
+RESULTS="$1"; shift
+[ -d "$RESULTS" ] || tcperf_die "no such results directory: $RESULTS"
+
+PERF_DIR="${PERF_DIR:-$TCPERF_ROOT/perf_standalone}"
+[ -f "$PERF_DIR/analyze_perf.py" ] || tcperf_die "no analyze_perf.py — run tc-perf-setup first"
+
+# analyze_perf.py needs no torch, but it does need *a* python with pandas.
+# On a bare login node there may be no `python` at all until the module loads.
+tcperf_load_env >/dev/null 2>&1 || true
+PY="${TCPERF_PYTHON:-$(command -v python || command -v python3 || true)}"
+[ -n "$PY" ] || tcperf_die "no python found — load the frameworks module, or set TCPERF_PYTHON"
+"$PY" -c "import pandas" 2>/dev/null \
+    || tcperf_die "$PY cannot import pandas, which analyze_perf.py requires.
+    Load the frameworks module, or set TCPERF_PYTHON to an interpreter that has it."
+
+# An adapter directory is any subdir that actually contains CSVs.
+DIRS=()
+for d in "$RESULTS"/*/; do
+    [ -d "$d" ] || continue
+    label="$(basename "$d")"
+    compgen -G "$d/*.csv" >/dev/null || continue
+    DIRS+=(--dir "${label}:${d%/}")
+done
+[ ${#DIRS[@]} -gt 0 ] || tcperf_die "no adapter subdirectories with CSVs under $RESULTS
+    (expected e.g. $RESULTS/torchcomms/all_reduce.csv)"
+
+OUTDIR="${OUTDIR:-$RESULTS/analysis}"
+mkdir -p "$OUTDIR"
+
+echo "==> analyzing $RESULTS"
+for d in "${DIRS[@]}"; do [ "$d" = "--dir" ] || echo "    $d"; done
+echo "==> output: $OUTDIR"
+
+exec "$PY" "$PERF_DIR/analyze_perf.py" "${DIRS[@]}" --outdir "$OUTDIR" "$@"

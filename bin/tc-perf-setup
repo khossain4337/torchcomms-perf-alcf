@@ -1,0 +1,220 @@
+#!/bin/bash
+# tc-perf-setup — fetch PR #2633's perf harness, flatten it, patch it.
+#
+# WHAT THIS SOLVES
+#   The perf benchmarks live only on draft PR #2633 (never merged, and we are
+#   assuming it never will be). You cannot just put the PR clone on PYTHONPATH:
+#   the clone ships a full torchcomms/ package directory, so it REPLACES your
+#   installed torchcomms rather than extending it, and then dies at
+#       ModuleNotFoundError: No module named 'torchcomms._comms'
+#   because the compiled .so only exists in the install.
+#
+#   So we copy the ~18 perf scripts into a FLAT directory and rewrite their
+#   absolute imports. The result imports the perf helpers from the flat dir and
+#   `torchcomms` from wherever it is actually installed — which is exactly what
+#   makes this work against an arbitrary torchcomms build.
+#
+#   The installed torchcomms is NEVER read for anything but `import`, and never
+#   written to. This script only ever writes inside <repo>/perf_standalone.
+#
+# PRESERVATION
+#   perf_standalone/ carries our patches. Refreshes never clobber a file you
+#   edited: a pristine copy of each upstream file is kept in .upstream/ and
+#   compared against. Anything that differs is reported and left alone unless
+#   you pass --force (which snapshots first).
+#
+# Usage:
+#   tc-perf-setup                 # fetch if needed, build/refresh, apply patches
+#   tc-perf-setup --check         # report drift, write nothing
+#   tc-perf-setup --force         # rebuild from upstream (snapshots first)
+#   tc-perf-setup --no-patch      # build the vanilla upstream harness
+#   tc-perf-setup --offline       # never touch the network
+#
+# Env:
+#   TCPERF_UPSTREAM_DIR   existing torchcomms clone to source from (skips fetch)
+#   TCPERF_CACHE          where to clone if we must fetch (default <repo>/.cache/torchcomms)
+
+set -euo pipefail
+
+TCPERF_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../sites/common.sh
+. "$TCPERF_ROOT/sites/common.sh"
+
+MODE=refresh
+APPLY_PATCHES=1
+OFFLINE=0
+for arg in "$@"; do
+    case "$arg" in
+        --check)    MODE=check ;;
+        --force)    MODE=force ;;
+        --no-patch) APPLY_PATCHES=0 ;;
+        --offline)  OFFLINE=1 ;;
+        -h|--help)  sed -n '2,40p' "$0"; exit 0 ;;
+        *) tcperf_die "unknown option '$arg' (see --help)" ;;
+    esac
+done
+
+PERF_DIR="${PERF_DIR:-$TCPERF_ROOT/perf_standalone}"
+PRISTINE="$PERF_DIR/.upstream"
+CACHE="${TCPERF_CACHE:-$TCPERF_ROOT/.cache/torchcomms}"
+
+# The pinned upstream, read from upstream.lock so there is exactly one place
+# that says which commit we are on.
+# shellcheck source=../upstream.lock
+. "$TCPERF_ROOT/upstream.lock"
+: "${UPSTREAM_URL:?upstream.lock must set UPSTREAM_URL}"
+: "${UPSTREAM_PR:?upstream.lock must set UPSTREAM_PR}"
+: "${UPSTREAM_SHA:?upstream.lock must set UPSTREAM_SHA}"
+: "${UPSTREAM_SUBDIR:?upstream.lock must set UPSTREAM_SUBDIR}"
+
+# --- 1. locate or fetch the upstream tree -----------------------------------
+if [ -n "${TCPERF_UPSTREAM_DIR:-}" ]; then
+    REPO="$TCPERF_UPSTREAM_DIR"
+    echo "==> using existing clone: $REPO"
+elif [ -d "$CACHE/.git" ]; then
+    REPO="$CACHE"
+    echo "==> using cached clone: $REPO"
+else
+    [ "$OFFLINE" = "1" ] && tcperf_die "no clone available and --offline given.
+    Point TCPERF_UPSTREAM_DIR at an existing torchcomms checkout, or drop --offline."
+    echo "==> cloning $UPSTREAM_URL (PR #$UPSTREAM_PR) into $CACHE"
+    mkdir -p "$(dirname "$CACHE")"
+    git clone --quiet --filter=blob:none "$UPSTREAM_URL" "$CACHE"
+    REPO="$CACHE"
+fi
+
+# The PR branch lives on a fork, so `git fetch origin <sha>` will not find it.
+# GitHub exposes every PR head as refs/pull/<n>/head on the base repo; that is
+# the only reliable way to reach a draft PR's commit.
+if ! git -C "$REPO" cat-file -e "${UPSTREAM_SHA}^{commit}" 2>/dev/null; then
+    [ "$OFFLINE" = "1" ] && tcperf_die "commit $UPSTREAM_SHA not in $REPO and --offline given"
+    echo "==> fetching PR #$UPSTREAM_PR head"
+    git -C "$REPO" fetch --quiet origin "pull/${UPSTREAM_PR}/head:tcperf-pr${UPSTREAM_PR}" \
+        || tcperf_die "could not fetch pull/${UPSTREAM_PR}/head from origin"
+    git -C "$REPO" cat-file -e "${UPSTREAM_SHA}^{commit}" 2>/dev/null \
+        || tcperf_die "PR #$UPSTREAM_PR head does not contain $UPSTREAM_SHA (was the PR force-pushed?)
+    Update UPSTREAM_SHA in upstream.lock, or set TCPERF_UPSTREAM_DIR to a clone that has it."
+fi
+
+SRC="$REPO/$UPSTREAM_SUBDIR"
+if [ ! -d "$SRC" ]; then
+    # Cache clone may be on a different branch; check the commit out into place.
+    echo "==> checking out $UPSTREAM_SHA"
+    git -C "$REPO" checkout --quiet --detach "$UPSTREAM_SHA"
+fi
+[ -f "$SRC/perf_test_helpers.py" ] || tcperf_die "no $SRC/perf_test_helpers.py — wrong UPSTREAM_SUBDIR?"
+
+# Refuse to build from the wrong commit: hashes recorded in upstream.lock are
+# the guarantee that a colleague's perf_standalone matches ours.
+HEAD_SHA="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [ "$HEAD_SHA" != "$UPSTREAM_SHA" ]; then
+    echo "    note: clone HEAD is $HEAD_SHA, extracting $UPSTREAM_SHA from the object store"
+fi
+
+# --- 2. build/refresh the flat dir ------------------------------------------
+case "$PERF_DIR" in
+    */perf_standalone) ;;
+    *) tcperf_die "refusing: PERF_DIR must end in /perf_standalone (got: $PERF_DIR)" ;;
+esac
+mkdir -p "$PERF_DIR" "$PRISTINE"
+
+if [ "$MODE" = force ] && ls "$PERF_DIR"/*.py >/dev/null 2>&1; then
+    BAK="$PERF_DIR.bak.$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$BAK"; cp -f "$PERF_DIR"/*.py "$BAK"/
+    echo "==> snapshot: $BAK"
+fi
+
+# Flatten `from torchcomms.tests.perf.py.X import Y` -> `from X import Y`.
+# __init__.py is skipped on purpose: in a flat dir it would turn these into a
+# package and break the rewritten imports.
+rewrite() { git -C "$REPO" show "${UPSTREAM_SHA}:${UPSTREAM_SUBDIR}/$1" \
+            | sed 's/^from torchcomms\.tests\.perf\.py\./from /'; }
+
+files=$(git -C "$REPO" ls-tree --name-only "${UPSTREAM_SHA}:${UPSTREAM_SUBDIR}")
+copied=0; kept=0; stale=0
+for base in $files; do
+    [ "$base" = "__init__.py" ] && continue
+    dst="$PERF_DIR/$base"; ref="$PRISTINE/$base"
+
+    if [ ! -e "$dst" ]; then
+        [ "$MODE" = check ] && { echo "  MISSING: $base"; stale=$((stale+1)); continue; }
+        rewrite "$base" > "$dst"; rewrite "$base" > "$ref"; copied=$((copied+1)); continue
+    fi
+
+    # ADOPT: dst exists with no pristine reference (hand-built dir, or an
+    # older layout). Lay the reference down first, otherwise the very next
+    # refresh would silently overwrite a local patch.
+    if [ ! -e "$ref" ]; then
+        rewrite "$base" > "$ref"
+        if ! cmp -s "$dst" "$ref"; then
+            echo "  ADOPTED (differs from upstream, keeping yours): $base"
+            kept=$((kept+1)); continue
+        fi
+    fi
+
+    if ! cmp -s "$dst" "$ref"; then
+        if [ "$MODE" = force ]; then
+            rewrite "$base" > "$dst"; rewrite "$base" > "$ref"; copied=$((copied+1))
+        else
+            echo "  KEEP (locally modified): $base"; kept=$((kept+1))
+        fi
+        continue
+    fi
+
+    if ! cmp -s <(rewrite "$base") "$dst"; then
+        if [ "$MODE" = check ]; then
+            echo "  STALE (upstream changed): $base"; stale=$((stale+1))
+        else
+            rewrite "$base" > "$dst"; rewrite "$base" > "$ref"; copied=$((copied+1))
+        fi
+    fi
+done
+echo "==> flat dir: written=$copied kept=$kept stale=$stale"
+
+if [ "$MODE" = check ]; then
+    echo "check only, nothing written"
+    exit 0
+fi
+
+# --- 3. apply our patch set --------------------------------------------------
+# These fix real bugs in the draft PR. Since #2633 is assumed never to merge,
+# we carry them here rather than waiting upstream out. Each is idempotent:
+# already-applied patches are detected and skipped, so re-running is safe.
+if [ "$APPLY_PATCHES" = "1" ] && ls "$TCPERF_ROOT"/patches/*.patch >/dev/null 2>&1; then
+    echo "==> applying patches"
+    for p in "$TCPERF_ROOT"/patches/*.patch; do
+        name=$(basename "$p")
+        if patch -d "$PERF_DIR" -p1 --dry-run --silent -R -f < "$p" >/dev/null 2>&1; then
+            echo "  already applied: $name"
+        elif patch -d "$PERF_DIR" -p1 --silent -f < "$p" >/dev/null 2>&1; then
+            echo "  applied: $name"
+        else
+            echo "  FAILED: $name" >&2
+            echo "  (upstream moved under the patch; regenerate it against $UPSTREAM_SHA" >&2
+            echo "   or run with --no-patch to get the vanilla harness)" >&2
+            exit 1
+        fi
+    done
+else
+    echo "==> patches skipped"
+fi
+
+# --- 4. verify ---------------------------------------------------------------
+if grep -rn "torchcomms\.tests" "$PERF_DIR"/*.py 2>/dev/null; then
+    tcperf_die "unrewritten imports remain (above)"
+fi
+PY=$(command -v python3 || command -v python || true)
+if [ -n "$PY" ]; then
+    "$PY" -m py_compile "$PERF_DIR"/*.py && echo "==> compile OK"
+    rm -rf "$PERF_DIR/__pycache__"
+fi
+
+cat <<EOF
+
+perf dir : $PERF_DIR
+pristine : $PERF_DIR/.upstream   (upstream reference — do not edit)
+upstream : PR #$UPSTREAM_PR @ ${UPSTREAM_SHA:0:12}
+
+Local edits are preserved across refreshes. --check shows drift, --force resets.
+Next: tc-perf-doctor
+EOF

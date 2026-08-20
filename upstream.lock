@@ -1,0 +1,23 @@
+# upstream.lock — the single place that says which upstream we build from.
+#
+# PR #2633 ("Refactor collective perf benchmarks for multi-adapter comparison")
+# is an OPEN DRAFT and we are explicitly assuming it stays that way. The commit
+# below is what we validated against on Sunspot in Aug 2026.
+#
+# The PR branch lives on the fork pkourdis/torchcomms, so a plain
+# `git fetch origin` will NOT have this commit. tc-perf-setup fetches
+# refs/pull/2633/head from the base repo instead, which does reach it.
+#
+# If the PR is force-pushed, the fetch will succeed but the SHA check will
+# fail with a clear message. Update UPSTREAM_SHA here, re-run
+# `tc-perf-setup --check`, and expect the patches in patches/ to need a rebase.
+
+UPSTREAM_URL="https://github.com/meta-pytorch/torchcomms.git"
+UPSTREAM_PR="2633"
+UPSTREAM_SHA="157738bca399d48596d8fca67ca8c8b8abab2fa0"
+UPSTREAM_SUBDIR="comms/torchcomms/tests/perf/py"
+
+# sha256 of the two files our patches touch, as they exist upstream at
+# UPSTREAM_SHA (before the flat-import rewrite). tc-perf-doctor checks these.
+UPSTREAM_SHA256_collective_perf_test_py="8a9c37a627548076192e6b2e75d42ded7e2bdf9c058c14bf3d2005d1e60a47b1"
+UPSTREAM_SHA256_perf_test_helpers_py="12b10976639781e2975cffb562d6021db799dce65d5b3b0b3380fc288079406e"

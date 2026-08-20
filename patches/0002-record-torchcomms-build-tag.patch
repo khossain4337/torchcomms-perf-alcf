@@ -1,0 +1,50 @@
+ALCF patch 0002: record the torchcomms version/build tag in the CSV
+
+Two bugs, one line apart.
+
+1. Upstream computes
+
+       try:
+           torchcomms_version = torchcomms.__version__
+       except AttributeError:
+           torchcomms_version = "unknown"
+
+   into a LOCAL variable and never assigns it to info.torchcomms_version.
+   The dataclass default ("n/a") therefore survives into every CSV row.
+   Confirmed in our Phase 2 output: TorchCommsVersion=n/a on all rows.
+
+2. Even fixed, the lookup is empty on our build -- the installed torchcomms
+   exposes no __version__ attribute at all. So a plain fix would just turn
+   "n/a" into "unknown".
+
+The patch assigns the field AND falls back to $TORCHCOMMS_BUILD_TAG, which
+tc-perf-env populates from the frameworks module version. That makes CSVs
+taken months apart, or across a frameworks upgrade, distinguishable -- which
+is the entire point of having the column.
+
+Not upstreamed: PR #2633 is a draft we assume will not merge.
+
+--- a/collective_perf_test.py
++++ b/collective_perf_test.py
+@@ -283,10 +283,17 @@
+     else:
+         info.device_name = "n/a"
+ 
+-    try:
+-        torchcomms_version = torchcomms.__version__
+-    except AttributeError:
+-        torchcomms_version = "unknown"
++    # ALCF patch 0002: actually record what was measured.
++    # Upstream computes a local `torchcomms_version` here and then never
++    # assigns it to info.torchcomms_version, so every CSV reports "n/a".
++    # Worse, some builds (ours included) ship no torchcomms.__version__ at
++    # all, so even the fixed lookup yields nothing useful -- hence the
++    # TORCHCOMMS_BUILD_TAG fallback, which tc-perf-env sets from the
++    # frameworks module version.
++    torchcomms_version = getattr(torchcomms, "__version__", None)
++    if not torchcomms_version:
++        torchcomms_version = os.environ.get("TORCHCOMMS_BUILD_TAG", "unknown")
++    info.torchcomms_version = torchcomms_version
+ 
+     if config.run_all_comm_adapters:
+         adapters = ["torchcomms", "c10d", "c10d_torchcomms"]

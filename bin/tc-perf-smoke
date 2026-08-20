@@ -1,0 +1,24 @@
+#!/bin/bash
+# tc-perf-smoke — tiny run across all three adapters. Proves the pipe is
+# connected; produces NO meaningful performance numbers.
+#
+#   tc-perf-smoke            # 2 ranks/node, 1 KiB..4 KiB, 20 iters
+#   RPN=12 tc-perf-smoke
+#
+# This is the Phase 2 test from our bring-up, kept as a repo command because
+# it is the first thing to run on a new machine, a new frameworks module, or
+# after any change to the site profile.
+
+set -uo pipefail
+TCPERF_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+exec "$TCPERF_ROOT/bin/tc-perf-run" \
+    --rpn "${RPN:-2}" \
+    --collective "${COLLECTIVE:-all_reduce}" \
+    --min-size "${MIN_SIZE:-1024}" \
+    --max-size "${MAX_SIZE:-4096}" \
+    --iters "${ITERS:-20}" \
+    --warmup "${WARMUP:-2}" \
+    --sync-interval "${SYNC_INTERVAL:-0}" \
+    --tag smoke \
+    "$@"

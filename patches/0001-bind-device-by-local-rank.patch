@@ -1,0 +1,82 @@
+ALCF patch 0001: bind accelerators by node-local rank, not global rank
+
+Upstream (collective_perf_test.py, PR #2633 @ 157738b) does:
+
+    torch.accelerator.set_device_index(rank % device_count)
+
+using the GLOBAL rank. That is only correct when ranks-per-node happens to
+equal devices-per-node. On a 12-tile PVC node:
+
+    2 nodes x 12 rpn  -> correct by accident (12 % 12 wraps to 0)
+    2 nodes x  2 rpn  -> WRONG: ranks 2,3 bind tiles 2,3 instead of 0,1
+    2 nodes x  6 rpn  -> WRONG: ranks 6..11 bind tiles 6..11 instead of 0..5
+
+We observed this live in our Phase 2 smoke run (Ranks=4 = 2 nodes x 2 rpn).
+The benchmark still completes, so the failure is silent: you get numbers for
+a tile pairing you did not ask for.
+
+The fix reads a node-local rank from the environment, preferring LOCAL_RANK
+(exported by tc-perf-env, and by torchrun) and falling back through the PALS,
+Intel MPI, OpenMPI and Slurm spellings. If none is present it returns the
+global rank, which is exactly upstream's behaviour -- so this patch cannot
+make an un-wrapped run worse.
+
+Not upstreamed: PR #2633 is a draft we assume will not merge.
+
+--- a/collective_perf_test.py
++++ b/collective_perf_test.py
+@@ -58,6 +58,37 @@
+ REDUCE_OPS = ["sum", "min", "max", "avg", "product"]
+ 
+ 
++# --- ALCF patch 0001 -------------------------------------------------------
++# Node-local rank discovery. torchcomms' own get_rank_and_world_size() checks
++# OMPI_COMM_WORLD_*, RANK/WORLD_SIZE, SLURM_*, PMI_* -- none of which PALS sets
++# for the LOCAL rank, and the harness has no local-rank concept at all. The
++# perf_env wrapper exports LOCAL_RANK, so prefer that; the rest are fallbacks
++# for running under a different launcher without the wrapper.
++_LOCAL_RANK_ENV_VARS = (
++    "LOCAL_RANK",               # torchrun, and our tc-perf-env wrapper
++    "PALS_LOCAL_RANKID",        # PBS/PALS (Aurora, Sunspot)
++    "MPI_LOCALRANKID",          # Intel MPI
++    "OMPI_COMM_WORLD_LOCAL_RANK",
++    "SLURM_LOCALID",
++)
++
++
++def _local_rank_from_env(fallback: int = 0) -> int:
++    """Node-local rank, or `fallback` (the global rank) if nothing says.
++
++    Falling back to the global rank reproduces upstream's behaviour exactly,
++    so an un-wrapped run is no worse off than before this patch.
++    """
++    for var in _LOCAL_RANK_ENV_VARS:
++        val = os.environ.get(var)
++        if val is not None and val.strip() != "":
++            try:
++                return int(val)
++            except ValueError:
++                pass
++    return fallback
++
++
+ VALUE_FLAGS = {
+     "--warmup",
+     "--iters",
+@@ -282,7 +313,15 @@
+         if torch.accelerator.is_available():
+             device_count = torch.accelerator.device_count()
+             if device_count > 0:
+-                torch.accelerator.set_device_index(rank % device_count)
++                # ALCF patch 0001: bind by NODE-LOCAL rank, not global rank.
++                # Upstream uses `rank % device_count`, which is only correct
++                # when ranks-per-node == devices-per-node. At 2 nodes x 2 ranks
++                # on a 12-tile node, ranks 2 and 3 land on tiles 2 and 3 of the
++                # second node while ranks 0 and 1 use tiles 0 and 1 of the
++                # first -- different tiles, so the measured path is not the
++                # one you asked for. Observed live in our Phase 2 run.
++                local_rank = _local_rank_from_env(rank)
++                torch.accelerator.set_device_index(local_rank % device_count)
+ 
+         if rank == 0 and not record.config.quiet:
+             print("Collective Performance Test")

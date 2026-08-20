@@ -1,0 +1,42 @@
+#!/bin/bash
+#PBS -N tcperf-sweep
+#PBS -l select=2
+#PBS -l walltime=02:00:00
+#PBS -l filesystems=home:flare
+#PBS -q prod
+#PBS -j oe
+#
+# Full sweep: every collective, all three adapters, 1 KiB .. 64 MiB.
+#     qsub -A <YourProject> jobs/sweep.pbs
+#
+# Knobs (qsub -v):
+#     qsub -A P -v RPN=12,REPEATS=3,COLLECTIVES="all_reduce all_gather" jobs/sweep.pbs
+
+set -uo pipefail
+cd "${PBS_O_WORKDIR:-$PWD}"
+REPO="${TCPERF_ROOT:-$PBS_O_WORKDIR}"
+
+RPN="${RPN:-12}"
+REPEATS="${REPEATS:-2}"          # >=2: one run tells you nothing about noise
+COLLECTIVES="${COLLECTIVES:-all_reduce all_gather_single reduce_scatter_single all_to_all_single}"
+
+"$REPO/bin/tc-perf-doctor" || true
+
+for rep in $(seq 1 "$REPEATS"); do
+    for coll in $COLLECTIVES; do
+        echo "########## rep $rep/$REPEATS  $coll ##########"
+        # --sync-interval 1 gives per-iteration min/max, so the spread is
+        # visible. At 0 the harness reports min==max==avg, which hides it.
+        "$REPO/bin/tc-perf-run" \
+            --rpn "$RPN" \
+            --collective "$coll" \
+            --min-size 1024 --max-size 67108864 \
+            --iters 100 --warmup 50 \
+            --sync-interval 1 \
+            --tag "sweep-rep${rep}"
+    done
+done
+
+echo
+echo "Runs complete. Analyze each results dir, e.g.:"
+echo "  for d in $REPO/results/sweep-rep*/; do $REPO/bin/tc-perf-analyze \"\$d\" --baseline c10d; done"

@@ -1,0 +1,165 @@
+#!/bin/bash
+# tc-perf-run — launch a collective benchmark across a PBS allocation.
+#
+#   tc-perf-run [options] [-- extra args passed straight to the harness]
+#
+# Options (all also settable as env vars):
+#   --rpn N            ranks per node          (default: site TILES_PER_NODE)
+#   --adapters "a b"   torchcomms c10d c10d_torchcomms  (default: all three)
+#   --collective NAME  all_reduce, all_gather, ...      (default: all_reduce)
+#   --min-size B       smallest message        (default 1024)
+#   --max-size B       largest message         (default 67108864)
+#   --iters N          measured iterations     (default 100)
+#   --warmup N         warmup iterations       (default 20)
+#   --sync-interval N  0=bulk, 1=per-iteration min/max  (default 1)
+#   --tag NAME         label for the output dir
+#   --dry-run          print the mpiexec lines, launch nothing
+#
+# Each adapter is a SEPARATE mpiexec invocation. That is deliberate: the
+# harness's --all-comm-adapters path sets dist_config.use_torchcomms = True
+# for the c10d_torchcomms adapter and never resets it, so a later plain-c10d
+# adapter in the same process is silently still routed through torchcomms.
+# Separate processes make that impossible.
+
+set -uo pipefail   # NOT -e: one failing adapter must not skip the others
+
+echo "[tc-perf-run] starting $(date +%H:%M:%S) on $(hostname)"
+
+TCPERF_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../sites/common.sh
+. "$TCPERF_ROOT/sites/common.sh"
+
+RPN="${RPN:-$TCPERF_DEFAULT_RPN}"
+ADAPTERS="${ADAPTERS:-torchcomms c10d c10d_torchcomms}"
+COLLECTIVE="${COLLECTIVE:-all_reduce}"
+MIN_SIZE="${MIN_SIZE:-1024}"
+MAX_SIZE="${MAX_SIZE:-67108864}"
+ITERS="${ITERS:-100}"
+WARMUP="${WARMUP:-20}"
+SYNC_INTERVAL="${SYNC_INTERVAL:-1}"
+TAG="${TAG:-}"
+DRY=0
+EXTRA=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --rpn)            RPN="$2"; shift 2 ;;
+        --adapters)       ADAPTERS="$2"; shift 2 ;;
+        --collective)     COLLECTIVE="$2"; shift 2 ;;
+        --min-size)       MIN_SIZE="$2"; shift 2 ;;
+        --max-size)       MAX_SIZE="$2"; shift 2 ;;
+        --iters)          ITERS="$2"; shift 2 ;;
+        --warmup)         WARMUP="$2"; shift 2 ;;
+        --sync-interval)  SYNC_INTERVAL="$2"; shift 2 ;;
+        --tag)            TAG="$2"; shift 2 ;;
+        --dry-run)        DRY=1; shift ;;
+        --)               shift; EXTRA=("$@"); break ;;
+        -h|--help)        sed -n '2,26p' "$0"; exit 0 ;;
+        *) tcperf_die "unknown option '$1' (see --help)" ;;
+    esac
+done
+
+PERF_DIR="${PERF_DIR:-$TCPERF_ROOT/perf_standalone}"
+[ -f "$PERF_DIR/collective_perf_test.py" ] \
+    || tcperf_die "no harness at $PERF_DIR — run tc-perf-setup first"
+
+tcperf_load_env
+tcperf_topology
+
+NRANKS=$((NNODES * RPN))
+TS="$(date +%Y-%m-%d-%H%M%S)"
+RUNID="${TAG:+${TAG}_}N${NNODES}_R${RPN}_${COLLECTIVE}_${TS}"
+OUTBASE="${OUTBASE:-$TCPERF_ROOT/results/$RUNID}"
+LOGDIR="${LOGDIR:-$TCPERF_ROOT/logs}"
+mkdir -p "$OUTBASE" "$LOGDIR"
+
+export WORLD_SIZE="$NRANKS"
+export MASTER_ADDR
+export MASTER_PORT="${MASTER_PORT:-$TCPERF_MASTER_PORT}"
+export RPN
+export TCPERF_VERBOSE="${TCPERF_VERBOSE:-1}"
+
+# Resolve the build tag HERE rather than leaving it to tc-perf-env, so the
+# value that lands in the CSV is the same one recorded in run_metadata.txt.
+# FRAMEWORKS_VERSION is set by the module; fall back to the conda env name,
+# which is what actually distinguishes wheelforge RCs from each other.
+if [ -z "${TORCHCOMMS_BUILD_TAG:-}" ]; then
+    if [ -n "${FRAMEWORKS_VERSION:-}" ]; then
+        TORCHCOMMS_BUILD_TAG="$FRAMEWORKS_VERSION"
+    elif [ -n "${CONDA_PREFIX:-}" ]; then
+        TORCHCOMMS_BUILD_TAG="$(basename "$CONDA_PREFIX")"
+    else
+        TORCHCOMMS_BUILD_TAG="${TCPERF_SITE}-unknown-build"
+    fi
+fi
+export TORCHCOMMS_BUILD_TAG
+
+# Record exactly what produced these numbers, next to the numbers themselves.
+# Without this, a CSV six months from now is unattributable.
+{
+    echo "run_id=$RUNID"
+    echo "timestamp=$(date -Is)"
+    echo "site=$TCPERF_SITE"
+    echo "nodes=$NNODES rpn=$RPN nranks=$NRANKS"
+    echo "collective=$COLLECTIVE adapters=$ADAPTERS"
+    echo "sizes=${MIN_SIZE}..${MAX_SIZE} iters=$ITERS warmup=$WARMUP sync_interval=$SYNC_INTERVAL"
+    echo "backend=$TEST_BACKEND device=$TEST_DEVICE"
+    echo "master=$MASTER_ADDR:$MASTER_PORT"
+    echo "pbs_jobid=${PBS_JOBID:-none}"
+    echo "build_tag=$TORCHCOMMS_BUILD_TAG"
+    echo "conda_prefix=${CONDA_PREFIX:-none}"
+    echo "--- upstream ---"; cat "$TCPERF_ROOT/upstream.lock" | grep -v '^#' | grep .
+    echo "--- patches ---"; ls "$TCPERF_ROOT"/patches/*.patch 2>/dev/null | xargs -n1 basename 2>/dev/null || echo none
+    echo "--- ccl/ze env ---"; env | grep -E '^(CCL_|ZE_|FI_)' | sort
+} > "$OUTBASE/run_metadata.txt"
+
+echo "=============================================="
+echo "tc-perf-run  $RUNID"
+echo "  site=$TCPERF_SITE nodes=$NNODES rpn=$RPN nranks=$NRANKS"
+echo "  master=$MASTER_ADDR:$MASTER_PORT"
+echo "  collective=$COLLECTIVE sizes=${MIN_SIZE}..${MAX_SIZE}"
+echo "  iters=$ITERS warmup=$WARMUP sync-interval=$SYNC_INTERVAL"
+echo "  out=$OUTBASE"
+echo "=============================================="
+
+declare -A RESULT
+for adapter in $ADAPTERS; do
+    case "$adapter" in
+        torchcomms)      FLAG=() ;;
+        c10d)            FLAG=(--c10d) ;;
+        c10d_torchcomms) FLAG=(--c10d-torchcomms) ;;
+        *) echo "unknown adapter '$adapter', skipping" >&2; continue ;;
+    esac
+
+    LOG="$LOGDIR/${RUNID}_${adapter}.log"
+    echo; echo "---- $adapter ----"; echo "     log: $LOG"
+
+    CMD=(mpiexec --pmi=pmix -n "$NRANKS" -ppn "$RPN" -l --line-buffer
+         "$TCPERF_ROOT/bin/tc-perf-env"
+         python "$PERF_DIR/collective_perf_test.py" "$COLLECTIVE" "${FLAG[@]}"
+         --min-size "$MIN_SIZE" --max-size "$MAX_SIZE"
+         --iters "$ITERS" --warmup "$WARMUP"
+         --sync-interval "$SYNC_INTERVAL"
+         --csv --output-dir "$OUTBASE/$adapter")
+    [ ${#EXTRA[@]} -gt 0 ] && CMD+=("${EXTRA[@]}")
+
+    if [ "$DRY" = "1" ]; then
+        printf '     %q' "${CMD[@]}"; echo; RESULT[$adapter]="DRY"; continue
+    fi
+
+    "${CMD[@]}" 2>&1 | tee "$LOG"
+    rc=${PIPESTATUS[0]}                        # tee eats the exit status
+    [ "$rc" -eq 0 ] && RESULT[$adapter]="PASS" || RESULT[$adapter]="FAIL (rc=$rc)"
+    echo "     -> ${RESULT[$adapter]}"
+done
+
+echo; echo "=============================================="
+echo "Summary  $RUNID"
+for adapter in $ADAPTERS; do
+    printf "  %-18s %s\n" "$adapter" "${RESULT[$adapter]:-not run}"
+done
+echo "=============================================="
+echo "results  : $OUTBASE"
+echo "metadata : $OUTBASE/run_metadata.txt"
+echo
+echo "Analyze:  tc-perf-analyze $OUTBASE --baseline c10d"

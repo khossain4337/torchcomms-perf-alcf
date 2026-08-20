@@ -1,0 +1,168 @@
+#!/bin/bash
+# tc-perf-doctor — preflight. Run this before wasting allocation time.
+#
+#   tc-perf-doctor
+#
+# Every check here exists because something actually went wrong for us once.
+# Exit 0 = green, 1 = something is broken.
+
+set -uo pipefail   # NOT -e: we want the whole report, not the first failure
+
+TCPERF_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=../sites/common.sh
+. "$TCPERF_ROOT/sites/common.sh"
+
+PASS=0; FAIL=0; WARN=0
+ok()   { printf '  \033[32m ok \033[0m %s\n' "$*"; PASS=$((PASS+1)); }
+bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$*"; FAIL=$((FAIL+1)); }
+warn() { printf '  \033[33mwarn\033[0m %s\n' "$*"; WARN=$((WARN+1)); }
+
+echo "tc-perf-doctor  ($(date +%H:%M:%S) on $(hostname))"
+echo
+
+# --- 1. site ----------------------------------------------------------------
+echo "[site]"
+if [ -r "$TCPERF_ROOT/sites/${TCPERF_SITE}.sh" ]; then
+    ok "profile: $TCPERF_SITE (hsn suffix '${TCPERF_HSN_SUFFIX:-none}', ${TCPERF_TILES_PER_NODE} tiles/node)"
+else
+    warn "site detected as '$TCPERF_SITE' with no profile — set TCPERF_SITE or add sites/${TCPERF_SITE}.sh"
+fi
+
+# --- 2. environment ---------------------------------------------------------
+echo "[environment]"
+tcperf_load_env >/dev/null 2>&1 || true
+if python -c "import torch" 2>/dev/null; then
+    ok "torch $(python -c 'import torch; print(torch.__version__)' 2>/dev/null)"
+else
+    bad "cannot import torch — load the frameworks module / activate the conda env"
+fi
+
+if python -c "import torchcomms" 2>/dev/null; then
+    loc=$(python -c 'import torchcomms; print(torchcomms.__file__)' 2>/dev/null)
+    ok "torchcomms importable: $loc"
+    # The exact failure that made PYTHONPATH=<clone>/comms unusable.
+    if python -c "import torchcomms._comms" 2>/dev/null; then
+        ok "torchcomms._comms (compiled extension) present"
+    else
+        bad "torchcomms imports but torchcomms._comms does NOT.
+        This is the package-shadowing failure: something on PYTHONPATH is
+        replacing the installed torchcomms with a source tree that has no
+        compiled .so. Check: python -c 'import torchcomms; print(torchcomms.__file__)'
+        and remove any torchcomms clone from PYTHONPATH."
+    fi
+    ver=$(python -c 'import torchcomms; print(getattr(torchcomms,"__version__",""))' 2>/dev/null)
+    if [ -n "$ver" ]; then ok "torchcomms.__version__ = $ver"
+    else warn "no torchcomms.__version__ — CSVs will use \$TORCHCOMMS_BUILD_TAG (patch 0002)"; fi
+else
+    bad "cannot import torchcomms"
+fi
+
+# --- 3. accelerators --------------------------------------------------------
+echo "[accelerators]"
+dev=$(python - <<'PY' 2>/dev/null
+import torch
+try:
+    if torch.accelerator.is_available():
+        print(f"{torch.accelerator.current_accelerator()} x{torch.accelerator.device_count()}")
+    else:
+        print("none")
+except Exception as e:
+    print(f"error: {e}")
+PY
+)
+# On a login node there are no accelerators and that is fine; only treat it as
+# a failure inside an allocation, where it means something is actually wrong.
+case "$dev" in
+    none|error:*|"")
+        if [ -n "${PBS_NODEFILE:-}" ]; then
+            bad "no accelerator visible ($dev) inside a PBS allocation.
+        Check ZE_FLAT_DEVICE_HIERARCHY and that the frameworks env is loaded."
+        else
+            warn "no accelerator visible ($dev) — expected on a login node; re-run inside a job"
+        fi ;;
+    *) ok "torch.accelerator: $dev"
+       n="${dev##*x}"
+       if [ "$n" != "$TCPERF_TILES_PER_NODE" ]; then
+           warn "sees $n devices but the site profile says $TCPERF_TILES_PER_NODE.
+        Check ZE_FLAT_DEVICE_HIERARCHY (currently '${ZE_FLAT_DEVICE_HIERARCHY:-unset}', want FLAT)."
+       fi ;;
+esac
+
+# --- 4. harness -------------------------------------------------------------
+echo "[harness]"
+PERF_DIR="${PERF_DIR:-$TCPERF_ROOT/perf_standalone}"
+if [ -f "$PERF_DIR/collective_perf_test.py" ]; then
+    ok "perf_standalone present ($(ls "$PERF_DIR"/*.py 2>/dev/null | wc -l) files)"
+    if grep -q "torchcomms\.tests" "$PERF_DIR"/*.py 2>/dev/null; then
+        bad "unrewritten 'torchcomms.tests' imports remain — re-run tc-perf-setup --force"
+    else
+        ok "imports flattened"
+    fi
+    if [ -f "$PERF_DIR/__init__.py" ]; then
+        bad "$PERF_DIR/__init__.py exists — it turns the flat dir into a package and breaks the rewrite. Delete it."
+    fi
+    # Patches actually in place?
+    if grep -q "_local_rank_from_env" "$PERF_DIR/collective_perf_test.py" 2>/dev/null; then
+        ok "patch 0001 (local-rank device binding) applied"
+    else
+        warn "patch 0001 NOT applied — device binding uses the global rank.
+        Correct only when ranks-per-node == devices-per-node. Run tc-perf-setup."
+    fi
+    if grep -q "info.torchcomms_version = torchcomms_version" "$PERF_DIR/collective_perf_test.py" 2>/dev/null; then
+        ok "patch 0002 (build-tag recording) applied"
+    else
+        warn "patch 0002 NOT applied — CSVs will report TorchCommsVersion=n/a"
+    fi
+    if python -m py_compile "$PERF_DIR"/*.py 2>/dev/null; then
+        ok "harness compiles"; rm -rf "$PERF_DIR/__pycache__"
+    else
+        bad "harness does not compile"
+    fi
+else
+    bad "no harness at $PERF_DIR — run tc-perf-setup"
+fi
+
+# analyze_perf.py's dependencies are separate from the harness's.
+echo "[analysis deps]"
+for m in pandas matplotlib; do
+    if python -c "import $m" 2>/dev/null; then ok "$m"
+    else warn "$m missing — tc-perf-analyze needs it (--summary-only still needs pandas)"; fi
+done
+
+# --- 5. launcher / allocation ----------------------------------------------
+echo "[launcher]"
+if command -v mpiexec >/dev/null 2>&1; then ok "mpiexec: $(command -v mpiexec)"
+else bad "no mpiexec in PATH"; fi
+
+if [ -n "${PBS_NODEFILE:-}" ] && [ -r "$PBS_NODEFILE" ]; then
+    n=$(wc -l < "$PBS_NODEFILE")
+    ok "PBS allocation: $n node(s), job ${PBS_JOBID:-?}"
+    master="$(tcperf_reachable "$(head -n1 "$PBS_NODEFILE")")"
+    if getent hosts "$master" >/dev/null 2>&1; then
+        naddr=$(getent hosts "$master" | wc -l)
+        if [ "$naddr" -eq 1 ]; then ok "master resolves: $master"
+        else warn "master $master resolves to $naddr addresses — rendezvous may be flaky.
+        Check TCPERF_HSN_SUFFIX in sites/${TCPERF_SITE}.sh (prefer the -hsn0 form)."; fi
+    else
+        bad "master address does not resolve: $master
+        Fix TCPERF_HSN_SUFFIX in sites/${TCPERF_SITE}.sh"
+    fi
+else
+    warn "not in a PBS allocation — tc-perf-run will assume a single node"
+fi
+
+# --- 6. measurement confounds ----------------------------------------------
+echo "[measurement notes]"
+for v in CCL_ATL_SYNC_COLL CCL_OP_SYNC; do
+    val="$(eval echo "\${$v:-}")"
+    [ -n "$val" ] && warn "$v=$val is set — forces synchronous collectives, so --async and
+        --sync-interval will under-report differences. This is the module default;
+        we do not override it, but say so when reporting async numbers."
+done
+
+echo
+echo "=============================================="
+printf "  pass %d   warn %d   fail %d\n" "$PASS" "$WARN" "$FAIL"
+echo "=============================================="
+[ "$FAIL" -eq 0 ] && { echo "Ready. Next: tc-perf-smoke"; exit 0; }
+echo "Fix the FAILs above before running."; exit 1

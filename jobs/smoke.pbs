@@ -1,0 +1,20 @@
+#!/bin/bash
+#PBS -N tcperf-smoke
+#PBS -l select=2
+#PBS -l walltime=00:20:00
+#PBS -l filesystems=home:flare
+#PBS -q debug
+#PBS -j oe
+#
+# Smallest useful job: proves all three adapters work end to end.
+#     qsub -A <YourProject> jobs/smoke.pbs
+#
+# Adjust -l filesystems and -q for your machine and project.
+
+set -uo pipefail
+cd "${PBS_O_WORKDIR:-$PWD}"
+
+REPO="${TCPERF_ROOT:-$PBS_O_WORKDIR}"
+
+"$REPO/bin/tc-perf-doctor" || echo "doctor reported problems; continuing anyway"
+"$REPO/bin/tc-perf-smoke"
