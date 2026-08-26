@@ -63,7 +63,7 @@ export ZE_AFFINITY_MASK="0,1,2,3,4,5,6,7,8,9,10,11"
 mkdir -p ${OUT_DIR}
 
 
-mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer -envall \
+mpiexec --pmi=pmix -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer -envall \
     --cpu-bind ${CPU_AFFINITY} \
     -genv MASTER_ADDR ${MASTER_ADDR} \
     -genv MASTER_PORT ${MASTER_PORT} \
@@ -89,6 +89,7 @@ mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer -envall \
         export MASTER_PORT=${MASTER_PORT}
 
         unset TORCHCOMM_XCCL_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD
+        export TORCHCOMM_TIMEOUT_SECONDS=${TORCHCOMM_TIMEOUT_SECONDS:-300}
         export CCL_OP_SYNC=0
         export CCL_ATL_SYNC_COLL=0
 
@@ -115,7 +116,7 @@ mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer -envall \
             --csv --output-dir ${OUT_DIR}/torchcomms
     "
 
-mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer -envall \
+mpiexec --pmi=pmix -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer -envall \
     --cpu-bind ${CPU_AFFINITY} \
     -genv MASTER_ADDR ${MASTER_ADDR} \
     -genv MASTER_PORT ${MASTER_PORT} \
@@ -141,6 +142,7 @@ mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer -envall \
         export MASTER_PORT=${MASTER_PORT}
 
         unset TORCHCOMM_XCCL_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD
+        export TORCHCOMM_TIMEOUT_SECONDS=${TORCHCOMM_TIMEOUT_SECONDS:-300}
         export CCL_OP_SYNC=0
         export CCL_ATL_SYNC_COLL=0
 
@@ -167,7 +169,7 @@ mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer -envall \
             --csv --output-dir ${OUT_DIR}/c10d
     "
 
-mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer -envall \
+mpiexec --pmi=pmix -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer -envall \
     --cpu-bind ${CPU_AFFINITY} \
     -genv MASTER_ADDR ${MASTER_ADDR} \
     -genv MASTER_PORT ${MASTER_PORT} \
@@ -193,6 +195,7 @@ mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer -envall \
         export MASTER_PORT=${MASTER_PORT}
 
         unset TORCHCOMM_XCCL_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD
+        export TORCHCOMM_TIMEOUT_SECONDS=${TORCHCOMM_TIMEOUT_SECONDS:-300}
         export CCL_OP_SYNC=0
         export CCL_ATL_SYNC_COLL=0
 
