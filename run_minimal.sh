@@ -31,7 +31,7 @@ let NRANKS=${NNODES}*${NRANKS_PER_NODE}
 MASTER_ADDR=$(head -n 1 $PBS_NODEFILE)-hsn0.hsn.cm.sunspot.alcf.anl.gov
 MASTER_PORT=2345
 
-export WORLD_SIZE=${NRANKS}
+export PALS_WORLD_SIZE=${NRANKS}
 
 module add frameworks
 
@@ -61,13 +61,19 @@ RANK_ENV=${BENCH_DIR}/rank_env_minimal.sh
 
 cat > ${RANK_ENV} <<'EOF'
 #!/bin/bash
-export RANK=${PMI_RANK:-${PMIX_RANK:-${PALS_RANKID:-}}}
+export RANK=${PALS_RANKID:-${PMIX_RANK:-${PMI_RANK:-}}}
 export LOCAL_RANK=${PALS_LOCAL_RANKID:-}
 export CCL_LOCAL_RANK=${LOCAL_RANK}
+export WORLD_SIZE=${WORLD_SIZE:-${PALS_WORLD_SIZE:-}}
 unset TORCHCOMM_XCCL_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD
 
 if [ -z "${RANK}" ]; then
-    echo "rank_env: RANK empty on $(hostname): PMI_RANK/PMIX_RANK/PALS_RANKID all unset" >&2
+    echo "rank_env: RANK empty on $(hostname): PALS_RANKID/PMIX_RANK/PMI_RANK all unset" >&2
+    env | grep -E '^(PMI|PALS)' | sort >&2
+    exit 1
+fi
+if [ -z "${WORLD_SIZE}" ]; then
+    echo "rank_env: WORLD_SIZE empty on $(hostname): pass -env PALS_WORLD_SIZE=N" >&2
     env | grep -E '^(PMI|PALS)' | sort >&2
     exit 1
 fi
@@ -84,6 +90,7 @@ chmod +x ${RANK_ENV}
 mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer --cpu-bind ${CPU_AFFINITY} \
     -env MASTER_ADDR=${MASTER_ADDR} \
     -env MASTER_PORT=${MASTER_PORT} \
+    -env PALS_WORLD_SIZE=${NRANKS} \
     -env WORLD_SIZE=${NRANKS} \
     -env CCL_LOCAL_SIZE=${NRANKS_PER_NODE} \
     ${RANK_ENV} \
@@ -96,6 +103,7 @@ mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer --cpu-bind ${CPU_A
 mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer --cpu-bind ${CPU_AFFINITY} \
     -env MASTER_ADDR=${MASTER_ADDR} \
     -env MASTER_PORT=${MASTER_PORT} \
+    -env PALS_WORLD_SIZE=${NRANKS} \
     -env WORLD_SIZE=${NRANKS} \
     -env CCL_LOCAL_SIZE=${NRANKS_PER_NODE} \
     ${RANK_ENV} \
@@ -108,6 +116,7 @@ mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer --cpu-bind ${CPU_A
 mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer --cpu-bind ${CPU_AFFINITY} \
     -env MASTER_ADDR=${MASTER_ADDR} \
     -env MASTER_PORT=${MASTER_PORT} \
+    -env PALS_WORLD_SIZE=${NRANKS} \
     -env WORLD_SIZE=${NRANKS} \
     -env CCL_LOCAL_SIZE=${NRANKS_PER_NODE} \
     ${RANK_ENV} \
