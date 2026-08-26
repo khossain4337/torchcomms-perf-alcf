@@ -152,13 +152,32 @@ else
 fi
 
 # --- 6. measurement confounds ----------------------------------------------
+# What matters is what the RANKS see, not what this login/head shell sees.
+# bin/tc-perf-env sets these per-rank, after the module load, so report the
+# effective mode rather than the ambient value.
 echo "[measurement notes]"
+_ccl_ambient=""
 for v in CCL_ATL_SYNC_COLL CCL_OP_SYNC; do
     val="$(eval echo "\${$v:-}")"
-    [ -n "$val" ] && warn "$v=$val is set — forces synchronous collectives, so --async and
-        --sync-interval will under-report differences. This is the module default;
-        we do not override it, but say so when reporting async numbers."
+    [ -n "$val" ] && _ccl_ambient="${_ccl_ambient}${_ccl_ambient:+ }$v=$val"
 done
+[ -n "$_ccl_ambient" ] && echo "        module default in this shell: $_ccl_ambient"
+
+case "${TCPERF_CCL_SYNC:-0}" in
+    keep)
+        [ -n "$_ccl_ambient" ] && warn "TCPERF_CCL_SYNC=keep — synchronous collectives are LEFT ON, so --async
+        and --sync-interval will under-report differences. Say so when reporting."
+        ;;
+    unset)
+        ok "TCPERF_CCL_SYNC=unset — the shim removes both per-rank; oneCCL's own default applies" ;;
+    0)
+        ok "TCPERF_CCL_SYNC=0 — the shim sets both to 0 per-rank (async collectives)" ;;
+    *)
+        warn "TCPERF_CCL_SYNC=${TCPERF_CCL_SYNC} — the shim will export that value to both
+        CCL_OP_SYNC and CCL_ATL_SYNC_COLL. Expected 0, 'unset', or 'keep'." ;;
+esac
+echo "        (the effective value is printed per-run by tc-perf-env, and recorded"
+echo "         as ccl_sync_mode= in run_metadata.txt)"
 
 echo
 echo "=============================================="

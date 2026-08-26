@@ -50,7 +50,26 @@ before spending allocation time on the ladder.
     NODE_RUNGS="1 2 4"         bash run.sh ladder
     RPN_RUNGS="2 12"           bash run.sh ladder
     REPEATS=3                  bash run.sh sweep
+    TCPERF_CCL_SYNC=keep       bash run.sh ladder    # see below
     DRY=1                      bash run.sh ladder    # print commands, launch nothing
+
+### `TCPERF_CCL_SYNC`
+
+The frameworks module forces synchronous collectives (`CCL_OP_SYNC=1`,
+`CCL_ATL_SYNC_COLL=1`). **We now override both to 0 by default.**
+
+    TCPERF_CCL_SYNC=0        the shim exports both as 0     <- default
+    TCPERF_CCL_SYNC=unset    the shim removes both entirely
+    TCPERF_CCL_SYNC=keep     module default, synchronous
+
+Worth running the ladder under `0` *and* `keep` if allocation allows — the gap
+between them is itself a result, and it is the one number that says how much the
+site's own default is costing. They answer different questions, so label which
+is which; `run_metadata.txt` records `ccl_sync_mode=`.
+
+The override lives in `bin/tc-perf-env` and nowhere else: `tc-perf-run` loads
+the frameworks module, which re-sets both to 1, so an export in `run.sh` or a
+job script is silently undone before the ranks start.
 
 `DRY=1` launches no MPI, but it is **not instant**: `tc-perf-run` probes
 `import torch` before it looks at `--dry-run`, and that import costs ~17 s off

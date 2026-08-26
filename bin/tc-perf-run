@@ -110,7 +110,15 @@ export TORCHCOMMS_BUILD_TAG
     echo "conda_prefix=${CONDA_PREFIX:-none}"
     echo "--- upstream ---"; cat "$TCPERF_ROOT/upstream.lock" | grep -v '^#' | grep .
     echo "--- patches ---"; ls "$TCPERF_ROOT"/patches/*.patch 2>/dev/null | xargs -n1 basename 2>/dev/null || echo none
-    echo "--- ccl/ze env ---"; env | grep -E '^(CCL_|ZE_|FI_)' | sort
+    echo "ccl_sync_mode=${TCPERF_CCL_SYNC:-0}"
+    echo "--- ccl/ze env ---"
+    # CAUTION: this is the environment of THIS script, not of the ranks.
+    # bin/tc-perf-env overrides CCL_OP_SYNC / CCL_ATL_SYNC_COLL per-rank, after
+    # the module load, so the two lines below can read 1 while the ranks ran
+    # with 0. ccl_sync_mode above is what actually applied; for everything else
+    # this listing is accurate.
+    env | grep -E '^(CCL_|ZE_|FI_)' | sort \
+        | sed -E 's/^(CCL_OP_SYNC|CCL_ATL_SYNC_COLL)=(.*)$/\1=\2   <- pre-override; see ccl_sync_mode/'
 } > "$OUTBASE/run_metadata.txt"
 
 echo "=============================================="

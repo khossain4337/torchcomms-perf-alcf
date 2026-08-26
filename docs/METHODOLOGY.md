@@ -51,10 +51,36 @@ The frameworks module sets `CCL_ATL_SYNC_COLL=1` and `CCL_OP_SYNC=1`. These
 force synchronous collectives, which compresses the difference between `--async`
 and sync dispatch to nearly nothing.
 
-We deliberately **do not** override them: they are the defaults real users run
-under, so measuring with them is measuring reality. But any async-vs-sync claim
-must state that they were set. `tc-perf-doctor` warns when it sees them, and
-every `run_metadata.txt` records the full `CCL_*` environment.
+**We override them to 0 by default** (changed 2026-08-26). `TCPERF_CCL_SYNC`
+selects the behaviour:
+
+| value | effect | what it measures |
+|---|---|---|
+| `0` (default) | both exported as `0` per-rank | the library's own asynchrony |
+| `unset` | both removed; oneCCL's built-in default applies | oneCCL unconfigured |
+| `keep` | module values left alone | what a user gets by `ml add frameworks` |
+
+These are different questions, not better and worse answers. `0` isolates
+torchcomms/oneCCL behaviour from a site policy that happens to serialise it;
+`keep` measures what someone actually experiences. **A report must say which
+one it used** — `run_metadata.txt` records it as `ccl_sync_mode=`, and
+`tc-perf-env` prints it on rank 0 at the top of every run.
+
+`0` and `unset` are not equivalent: one asserts a value, the other declines to.
+If a run under `0` looks identical to one under `keep`, try `unset` before
+concluding the setting does not matter.
+
+### Where the override lives, and why it cannot live anywhere else
+
+In `bin/tc-perf-env`, the per-rank shim — **not** in `run.sh`, a job script, or
+a site profile. `tc-perf-run` calls `tcperf_load_env`, which runs
+`module add frameworks`, which re-sets both variables to `1`. Anything exported
+before that point is silently overwritten before the ranks ever start. The shim
+runs inside `mpiexec`, after the module load, so it has the last word.
+
+This also means `run_metadata.txt`'s `CCL_*` listing is captured *pre*-override
+and can read `CCL_OP_SYNC=1` for a run whose ranks used `0`. Those two lines are
+annotated in the file; `ccl_sync_mode=` is the authoritative one.
 
 ## Bus bandwidth
 

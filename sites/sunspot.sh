@@ -30,6 +30,15 @@ export CCL_PROCESS_LAUNCHER="${CCL_PROCESS_LAUNCHER:-pmix}"
 
 # NOTE (measurement confound): the frameworks module ships CCL_ATL_SYNC_COLL=1
 # and CCL_OP_SYNC=1. Those force synchronous collectives, which makes --async
-# and --sync-interval report nearly the same thing. We deliberately do NOT
-# override them — the defaults are what users actually run under — but any
-# async-vs-sync comparison must say so. See docs/METHODOLOGY.md.
+# and --sync-interval report nearly the same thing.
+#
+# We now DO override them, to 0, in bin/tc-perf-env — see the block there for
+# why that is the only place it can go (this profile is sourced before the
+# module load re-sets them). TCPERF_CCL_SYNC=keep restores the module default
+# if you want the as-users-run-it number; `unset` removes them entirely.
+#
+# The override is not free of consequence: 0 measures the library's own
+# asynchrony, `keep` measures what someone gets by loading the module and
+# running. Both are legitimate, they are not the same question, and a report
+# must say which one it used. run_metadata.txt records it as ccl_sync_mode=.
+# See docs/METHODOLOGY.md.
