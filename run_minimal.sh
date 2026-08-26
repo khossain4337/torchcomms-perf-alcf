@@ -29,8 +29,16 @@ export NRANKS_PER_NODE=12
 let NRANKS=${NNODES}*${NRANKS_PER_NODE}
 export NRANKS
 
-export MASTER_ADDR=$(head -n 1 $PBS_NODEFILE)-hsn0.hsn.cm.sunspot.alcf.anl.gov
-export MASTER_PORT=2345
+# Management network, NOT -hsn0. The only multi-node torchcomms bootstrap that
+# has ever completed on Sunspot -- run_integration_test.sh, 2 nodes x 12 ranks,
+# logs/N2_R12_2026-08-05-180711 -- used the .hostmgmt form on port 29500. The
+# -hsn0 form resolves to the CXI fabric (10.126.0.x); .hostmgmt resolves to the
+# management net (10.126.192.x). The XCCL UniqueID exchange is a control-plane
+# TCP rendezvous, and pointing it at the fabric address is what we are testing
+# as the cause of the 48-rank hang: every rank reaches the exchange, none
+# completes it. Revert this pair together if that turns out to be wrong.
+export MASTER_ADDR=$(head -n 1 $PBS_NODEFILE).hostmgmt.cm.sunspot.alcf.anl.gov
+export MASTER_PORT=29500
 
 export WORLD_SIZE=${NRANKS}
 export PALS_WORLD_SIZE=${NRANKS}
