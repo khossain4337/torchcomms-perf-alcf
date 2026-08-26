@@ -111,6 +111,9 @@ export TORCHCOMMS_BUILD_TAG
     echo "--- upstream ---"; cat "$TCPERF_ROOT/upstream.lock" | grep -v '^#' | grep .
     echo "--- patches ---"; ls "$TCPERF_ROOT"/patches/*.patch 2>/dev/null | xargs -n1 basename 2>/dev/null || echo none
     echo "ccl_sync_mode=${TCPERF_CCL_SYNC:-0}"
+    echo "cpu_bind=${CPU_AFFINITY:-<none>}"
+    echo "ccl_worker_affinity=${CCL_WORKER_AFFINITY:-<unset>}"
+    echo "ze_affinity_mask=${ZE_AFFINITY_MASK:-<unset>}"
     echo "--- ccl/ze env ---"
     # CAUTION: this is the environment of THIS script, not of the ranks.
     # bin/tc-perf-env overrides CCL_OP_SYNC / CCL_ATL_SYNC_COLL per-rank, after
@@ -130,6 +133,32 @@ echo "  iters=$ITERS warmup=$WARMUP sync-interval=$SYNC_INTERVAL"
 echo "  out=$OUTBASE"
 echo "=============================================="
 
+# --- CPU binding ------------------------------------------------------------
+# From the site profile (sites/sunspot.sh), not hardcoded here. Built as an
+# array so an unset CPU_AFFINITY omits the flag entirely rather than passing
+# `--cpu-bind ""`, which PALS rejects -- sites/generic.sh defines no affinity.
+BIND=()
+if [ -n "${CPU_AFFINITY:-}" ]; then
+    BIND=(--cpu-bind "$CPU_AFFINITY")
+
+    # A `list:` spec maps group N onto LOCAL rank N. With fewer ranks per node
+    # than groups, the tail is simply unused -- correct, but it means an RPN=2
+    # run pins to the first two groups (socket 0) and never touches socket 1.
+    # That is a different machine than the RPN=12 run, so say so rather than
+    # letting it show up as an unexplained kink in the scaling curve.
+    case "$CPU_AFFINITY" in
+        list:*)
+            _ngroups=$(printf '%s' "${CPU_AFFINITY#list:}" | tr ':' '\n' | grep -c .)
+            if [ "$RPN" -lt "$_ngroups" ] 2>/dev/null; then
+                echo "[tc-perf-run] note: --cpu-bind has $_ngroups groups but rpn=$RPN;" >&2
+                echo "              ranks pin to the first $RPN group(s) only." >&2
+            elif [ "$RPN" -gt "$_ngroups" ] 2>/dev/null; then
+                echo "[tc-perf-run] WARNING: rpn=$RPN exceeds the $_ngroups groups in" >&2
+                echo "              CPU_AFFINITY. Ranks past $_ngroups get no binding." >&2
+            fi ;;
+    esac
+fi
+
 declare -A RESULT
 for adapter in $ADAPTERS; do
     case "$adapter" in
@@ -143,6 +172,7 @@ for adapter in $ADAPTERS; do
     echo; echo "---- $adapter ----"; echo "     log: $LOG"
 
     CMD=(mpiexec --pmi=pmix -n "$NRANKS" -ppn "$RPN" -l --line-buffer
+         "${BIND[@]}"
          "$TCPERF_ROOT/bin/tc-perf-env"
          python "$PERF_DIR/collective_perf_test.py" "$COLLECTIVE" "${FLAG[@]}"
          --min-size "$MIN_SIZE" --max-size "$MAX_SIZE"

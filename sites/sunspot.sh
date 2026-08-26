@@ -24,6 +24,35 @@ export TEST_DEVICE="${TEST_DEVICE:-xpu}"
 # FLAT exposes each tile as its own device (12/node). Changing this changes
 # what "a rank" means, so it belongs in the site profile, not in bin/.
 export ZE_FLAT_DEVICE_HIERARCHY="${ZE_FLAT_DEVICE_HIERARCHY:-FLAT}"
+
+# --- CPU / worker / device affinity -----------------------------------------
+# Sunspot node: 2 sockets x 52 cores, 6 PVC cards x 2 tiles. Left unpinned, the
+# kernel migrates ranks across sockets mid-run and the numbers acquire a spread
+# that has nothing to do with the collective.
+#
+# CPU_AFFINITY is consumed by the LAUNCHER, not by a rank: bin/tc-perf-run
+# passes it as `mpiexec --cpu-bind "$CPU_AFFINITY"`. PALS `list:` maps the Nth
+# colon-separated group onto LOCAL rank N, so the ordering here is the rank ->
+# core-set mapping. 12 groups, one per tile, first six on socket 0 and last six
+# on socket 1 -- matching the tile ordering FLAT produces.
+export CPU_AFFINITY="${CPU_AFFINITY:-list:4-7:8-11:12-15:16-19:20-23:24-27:56-59:60-63:64-67:68-71:72-75:76-79}"
+
+# oneCCL's own progress threads, one per rank, pinned clear of the compute
+# cores above. These are the cores that actually drive the fabric; landing them
+# on top of a rank's compute cores is a classic quiet regression.
+export CCL_WORKER_AFFINITY="${CCL_WORKER_AFFINITY:-42,43,44,45,46,47,94,95,96,97,98,99}"
+
+# All 12 tiles visible to every rank, in a fixed order. Under FLAT this is the
+# identity mapping, so it changes nothing today -- its job is to PIN the
+# ordering so a future driver or module change cannot silently renumber the
+# devices underneath patch 0001.
+#
+# Do NOT rewrite this per-rank to a single tile (the common Aurora idiom).
+# Patch 0001 selects the device itself, by local rank, out of whatever is
+# visible. Narrow the mask to one device and every rank sees only device 0,
+# so local rank 1+ indexes past the end -- or, worse, all ranks land on the
+# same tile and the run still "succeeds" with meaningless numbers.
+export ZE_AFFINITY_MASK="${ZE_AFFINITY_MASK:-0,1,2,3,4,5,6,7,8,9,10,11}"
 export CCL_ATL_TRANSPORT="${CCL_ATL_TRANSPORT:-mpi}"
 export CCL_KVS_MODE="${CCL_KVS_MODE:-pmi}"
 export CCL_PROCESS_LAUNCHER="${CCL_PROCESS_LAUNCHER:-pmix}"

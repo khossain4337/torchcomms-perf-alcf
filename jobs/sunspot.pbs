@@ -5,7 +5,33 @@
 #PBS -l filesystems=home:tegu
 #PBS -q workq
 #PBS -A datascience
-#PBS -j oe
+#PBS -o /lus/tegu/projects/datasets/software/testing/torchcomm_example/torchcomms-perf-alcf/jobs/outdir/
+#PBS -e /lus/tegu/projects/datasets/software/testing/torchcomm_example/torchcomms-perf-alcf/jobs/errordir/
+#
+# Split streams, deliberately: `-j oe` was here and is now GONE. It merges
+# stderr INTO stdout, so keeping it alongside -e leaves errordir permanently
+# empty -- the failure looks like "the job produced no errors".
+#
+# TRAILING SLASH IS LOAD-BEARING. A path with no filename gets the default
+# <jobID>.OU / <jobID>.ER inside it; the slash is what tells PBS the path is a
+# directory rather than a file to create. Without it you get a plain FILE named
+# `outdir`, silently overwritten by every subsequent job.
+#
+# Both directories must EXIST at submit time and be writable from the compute
+# nodes. If they are not, PBS cannot deliver and drops the output in its
+# undelivered spool -- your job runs to completion and you never see a line of
+# it. The body below re-checks and warns, but that warning itself lands in the
+# file it is warning about, so check by hand the first time:
+#
+#     mkdir -p jobs/outdir jobs/errordir
+#
+# This path is HARDCODED to /lus/tegu (Sunspot) because PBS directives cannot
+# reference variables -- no $PBS_O_WORKDIR, no $HOME, no shell expansion of any
+# kind. It matches `-l filesystems=home:tegu` above. The same repo on flare
+# lives under .../softwares/... (plural), so if you submit this from Aurora,
+# override both on the command line:
+#
+#     qsub -o /path/to/outdir/ -e /path/to/errordir/ jobs/sunspot.pbs
 #
 # ============================================================================
 # Batch form of run.sh, for SUNSPOT. The directives above are the ones that
@@ -57,6 +83,12 @@ if [ ! -x "$REPO/run.sh" ] && [ ! -r "$REPO/run.sh" ]; then
     exit 1
 fi
 cd "$REPO" || exit 1
+
+# Keep the -o/-e targets alive for NEXT time. They had to exist before this job
+# was accepted, so this cannot rescue the current run -- but a repo freshly
+# cloned or rsynced without them fails at qsub, and the message PBS gives for
+# that is not obvious.
+mkdir -p "$REPO/jobs/outdir" "$REPO/jobs/errordir" 2>/dev/null || true
 
 # Explicit, not detected. Detection would get this right (cabinet prefix x1*),
 # but its failure mode is quiet -- the `generic` profile has an empty HSN

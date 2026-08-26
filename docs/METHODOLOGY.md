@@ -82,6 +82,38 @@ This also means `run_metadata.txt`'s `CCL_*` listing is captured *pre*-override
 and can read `CCL_OP_SYNC=1` for a run whose ranks used `0`. Those two lines are
 annotated in the file; `ccl_sync_mode=` is the authoritative one.
 
+## Affinity
+
+Unpinned ranks migrate across sockets mid-run. That shows up as spread in the
+per-iteration numbers and is easy to misread as fabric noise, so all three
+bindings are set in `sites/sunspot.sh` and recorded per-run:
+
+| variable | consumed by | recorded as |
+|---|---|---|
+| `CPU_AFFINITY` | `mpiexec --cpu-bind` | `cpu_bind=` |
+| `CCL_WORKER_AFFINITY` | oneCCL progress threads | `ccl_worker_affinity=` |
+| `ZE_AFFINITY_MASK` | Level Zero device enumeration | `ze_affinity_mask=` |
+
+Compute cores are `4-27` and `56-79` (12 groups of 4, six per socket); the CCL
+workers sit on `42-47` and `94-99`, clear of them. `tc-perf-doctor` checks that
+separation — overlapping them costs fabric bandwidth without failing anything.
+
+Unlike `CCL_OP_SYNC`, these survive `module add frameworks` (the modulefile does
+not set them), so the site profile is a safe home. `ZE_FLAT_DEVICE_HIERARCHY` it
+*does* set — to the same `FLAT` we want.
+
+**Two numbers that are not comparable.** `CPU_AFFINITY` is a PALS `list:` spec,
+and `list:` maps group N onto *local* rank N. The 12 groups cover a full node,
+so an `RPN=2` rung pins both ranks to the first two groups — both on socket 0,
+never touching socket 1. That is a legitimate 2-rank measurement but it is a
+different hardware configuration from the 12-rank one, not just a smaller one.
+`tc-perf-run` prints a note whenever `RPN` is under the group count.
+
+`ZE_AFFINITY_MASK` lists all 12 tiles rather than one per rank. The usual Aurora
+idiom of narrowing it per-rank is **wrong here**: patch 0001 selects the device
+itself by local rank out of whatever is visible, so a single-tile mask puts every
+rank on tile 0 and the run still reports numbers. The doctor fails on that.
+
 ## Bus bandwidth
 
 The harness uses the standard ring formula:

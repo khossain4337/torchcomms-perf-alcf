@@ -87,6 +87,19 @@ and each launch pays torch + oneCCL init on every rank before it measures
 anything. That startup tax, not the measurement, is what fills a 6-hour
 walltime. To fit a smaller window cut collectives first — they multiply.
 
+## Affinity
+
+Ranks are pinned: `mpiexec --cpu-bind list:...` (12 groups, one per tile), CCL
+progress threads on cores `42-47,94-99`, and all 12 tiles visible. Set in
+`sites/sunspot.sh`, checked by `run.sh preflight`, recorded in
+`run_metadata.txt` as `cpu_bind=`. To measure unpinned, `CPU_AFFINITY= bash
+run.sh ...` will *not* work — the profile refills an empty value; use
+`TCPERF_SITE=generic`, or edit the profile.
+
+Heads-up on the `RPN=2` rung: `list:` binds by local rank, so both ranks land on
+socket 0 and the fabric never sees socket 1. Comparable to itself, not to the
+12-rank rung. `tc-perf-run` prints a note when this applies.
+
 ## If something looks wrong
 
 | Symptom | Cause |
@@ -117,6 +130,13 @@ the repo through `$PBS_O_WORKDIR`):
 
 The qsub command line overrides the directives in the file, so one job file
 covers every node count — no need to copy it per scale.
+
+Job output goes to `jobs/outdir/<jobid>.OU` and `jobs/errordir/<jobid>.ER`
+(streams are split, not joined). **Both directories must exist before you
+submit** or qsub is rejected — they are in the repo, but if you ever see
+`Bad UID for job execution` or an output-path error, run `mkdir -p jobs/outdir
+jobs/errordir`. Those paths are hardcoded to `/lus/tegu` because PBS directives
+cannot expand variables; submitting the flare copy needs `-o`/`-e` overrides.
 
 `-v` passes knobs through. PBS splits that list on **commas**, so a value may
 contain spaces but never a comma:

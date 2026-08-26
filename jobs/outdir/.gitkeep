@@ -1,0 +1,3 @@
+# PBS delivers job output here (#PBS -o / #PBS -e in sunspot.pbs).
+# This file exists only so the directory survives git and rsync --delete;
+# PBS requires both dirs to EXIST at submit time or qsub is rejected.

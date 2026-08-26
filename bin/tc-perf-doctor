@@ -179,6 +179,65 @@ esac
 echo "        (the effective value is printed per-run by tc-perf-env, and recorded"
 echo "         as ccl_sync_mode= in run_metadata.txt)"
 
+# --- 7. affinity ------------------------------------------------------------
+# Unpinned ranks migrate across sockets mid-run, which shows up as spread that
+# looks like fabric noise. Cheap to check here, expensive to notice later.
+echo "[affinity]"
+if [ -z "${CPU_AFFINITY:-}" ]; then
+    warn "CPU_AFFINITY unset — mpiexec runs without --cpu-bind and the kernel
+        places ranks. Fine for a smoke test, not for numbers you report."
+else
+    case "$CPU_AFFINITY" in
+        list:*)
+            _ng=$(printf '%s' "${CPU_AFFINITY#list:}" | tr ':' '\n' | grep -c .)
+            if [ "$_ng" -eq "$TCPERF_TILES_PER_NODE" ]; then
+                ok "CPU_AFFINITY: $_ng bind groups, one per tile"
+            else
+                warn "CPU_AFFINITY has $_ng bind groups but the site says
+        $TCPERF_TILES_PER_NODE tiles/node. A full-node run leaves ranks unpinned."
+            fi ;;
+        *)  ok "CPU_AFFINITY: $CPU_AFFINITY (non-list spec, not checked)" ;;
+    esac
+
+    # Workers sharing cores with compute is the quiet one: it does not fail,
+    # it just costs bandwidth. Only checkable for the plain list: form.
+    if [ -n "${CCL_WORKER_AFFINITY:-}" ]; then
+        _nw=$(printf '%s' "$CCL_WORKER_AFFINITY" | tr ',' '\n' | grep -c .)
+        _overlap=""
+        case "$CPU_AFFINITY" in
+            list:*)
+                _compute=$(printf '%s' "${CPU_AFFINITY#list:}" | tr ':' '\n' \
+                    | awk -F- 'NF==2{for(i=$1;i<=$2;i++)print i} NF==1&&$1!=""{print $1}' | sort -n -u)
+                for _w in $(printf '%s' "$CCL_WORKER_AFFINITY" | tr ',' ' '); do
+                    printf '%s\n' "$_compute" | grep -qx "$_w" && _overlap="$_overlap $_w"
+                done ;;
+        esac
+        if [ -n "$_overlap" ]; then
+            warn "CCL_WORKER_AFFINITY overlaps compute cores:$_overlap
+        oneCCL progress threads will contend with the ranks they serve."
+        else
+            ok "CCL_WORKER_AFFINITY: $_nw worker core(s), clear of compute cores"
+        fi
+    else
+        warn "CCL_WORKER_AFFINITY unset — oneCCL places its progress threads itself"
+    fi
+
+    if [ -n "${ZE_AFFINITY_MASK:-}" ]; then
+        _nz=$(printf '%s' "$ZE_AFFINITY_MASK" | tr ',' '\n' | grep -c .)
+        if [ "$_nz" -eq 1 ] && [ "$TCPERF_TILES_PER_NODE" -gt 1 ]; then
+            bad "ZE_AFFINITY_MASK exposes ONE device ($ZE_AFFINITY_MASK).
+        Patch 0001 binds by local rank out of the visible devices, so every
+        rank would land on the same tile — the run succeeds and the numbers
+        are meaningless. Expose all $TCPERF_TILES_PER_NODE, or unset it."
+        elif [ "$_nz" -eq "$TCPERF_TILES_PER_NODE" ]; then
+            ok "ZE_AFFINITY_MASK: all $_nz tiles visible, order pinned"
+        else
+            warn "ZE_AFFINITY_MASK exposes $_nz device(s), site says $TCPERF_TILES_PER_NODE"
+        fi
+    fi
+fi
+echo "        (recorded per-run in run_metadata.txt as cpu_bind= / ccl_worker_affinity=)"
+
 echo
 echo "=============================================="
 printf "  pass %d   warn %d   fail %d\n" "$PASS" "$WARN" "$FAIL"
