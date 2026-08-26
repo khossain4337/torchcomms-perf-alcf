@@ -1,0 +1,97 @@
+#!/bin/bash
+#PBS -N tcperf
+#PBS -l select=4
+#PBS -l walltime=06:00:00
+#PBS -l filesystems=home:tegu
+#PBS -q workq
+#PBS -A datascience
+#PBS -j oe
+#
+# ============================================================================
+# Batch form of run.sh, for SUNSPOT. The directives above are the ones that
+# work there; jobs/smoke.pbs and jobs/sweep.pbs carry AURORA values and are
+# wrong here (see the note at the bottom of this file).
+#
+#     qsub jobs/sunspot.pbs                                    # defaults below
+#     qsub -l select=8 -l walltime=08:00:00 jobs/sunspot.pbs   # bigger rung
+#     qsub -v STAGES="preflight smoke check" jobs/sunspot.pbs  # short shakedown
+#
+# Anything on the qsub command line beats the directive of the same name, so
+# one file covers every scale. Directives are only defaults.
+#
+# -v passes environment through. PBS splits that list on COMMAS, so a value may
+# contain spaces but never a comma:
+#
+#     qsub -v STAGES="preflight ladder",REPEATS=3 jobs/sunspot.pbs        # ok
+#     qsub -v COLLECTIVES="all_reduce all_to_all_single" jobs/sunspot.pbs # ok
+#
+# Every knob run.sh understands works here: STAGES, COLLECTIVES, NODE_RUNGS,
+# RPN_RUNGS, REPEATS, TCPERF_SITE, DRY.
+#
+# COST, before you submit. run.sh launches mpiexec once per adapter, so the
+# default ladder is
+#
+#     REPEATS 2 x NODE_RUNGS 3 x RPN_RUNGS 2 x COLLECTIVES 4 = 48 configs
+#     48 configs x 3 adapters                                = 144 launches
+#
+# and each launch pays full torch + oneCCL init before it measures anything.
+# At a minute of startup apiece that is well over two hours of pure overhead,
+# which is most of a 6-hour walltime spent not measuring. run.sh prints the
+# planned launch count in its banner -- read it. To fit a smaller window, cut
+# collectives first (they multiply), then repeats:
+#
+#     qsub -v COLLECTIVES="all_reduce all_to_all_single" jobs/sunspot.pbs
+# ============================================================================
+
+set -uo pipefail
+
+# PBS runs a COPY of this script from a spool directory, so $0 and BASH_SOURCE
+# point at the copy, not at the repo. PBS_O_WORKDIR (the directory you ran qsub
+# from) is the only reliable way back. TCPERF_ROOT overrides it if you submit
+# from somewhere else: qsub -v TCPERF_ROOT=/path/to/repo ...
+REPO="${TCPERF_ROOT:-${PBS_O_WORKDIR:-$PWD}}"
+
+if [ ! -x "$REPO/run.sh" ] && [ ! -r "$REPO/run.sh" ]; then
+    echo "tcperf: no run.sh under '$REPO'" >&2
+    echo "tcperf: submit from the repo root, or pass -v TCPERF_ROOT=/path/to/repo" >&2
+    exit 1
+fi
+cd "$REPO" || exit 1
+
+# Explicit, not detected. Detection would get this right (cabinet prefix x1*),
+# but its failure mode is quiet -- the `generic` profile has an empty HSN
+# suffix and 1 tile/node, so a multi-node run either fails to rendezvous or
+# measures one rank per node without saying so.
+export TCPERF_SITE="${TCPERF_SITE:-sunspot}"
+
+# preflight first, always: it is the only stage that can tell you the
+# environment is broken without spending allocation time on mpiexec.
+export STAGES="${STAGES:-preflight ladder}"
+
+echo "tcperf: jobid=${PBS_JOBID:-none} repo=$REPO"
+echo "tcperf: nodes=$( [ -r "${PBS_NODEFILE:-/dev/null}" ] && wc -l < "$PBS_NODEFILE" || echo '?' )"
+echo
+
+# Never swallow stderr here: Lmod's `module` dies under `set -u` with a message
+# that is the only clue you get (see sites/common.sh).
+bash run.sh
+rc=$?
+
+echo
+echo "tcperf: run.sh exited rc=$rc"
+echo "tcperf: results in $REPO/results/ , logs in $REPO/logs/"
+exit "$rc"
+
+# ----------------------------------------------------------------------------
+# Why not just prepend directives to run.sh itself?
+#
+# Because run.sh has to stay runnable inside an interactive allocation, where
+# it is invoked repeatedly, one stage at a time, while you look at the output
+# of the last one. Splitting the two keeps the driver single-source: this file
+# holds only what PBS needs, and every behavioural knob still lives in run.sh.
+#
+# jobs/smoke.pbs and jobs/sweep.pbs predate this file and target AURORA
+# (-q debug / -q prod, -l filesystems=home:flare). On Sunspot they will be
+# rejected at submit time for the queue, or accepted and then fail to reach the
+# filesystem. Use this file instead, or override both on the command line.
+# ----------------------------------------------------------------------------

@@ -81,6 +81,34 @@ else
 fi
 
 echo "[run.sh] site=$TCPERF_SITE  allocation=${ALLOC_NODES} node(s)  stages: $STAGES"
+
+# Say up front how much work this is. tc-perf-run launches mpiexec once PER
+# ADAPTER, and each launch pays full torch + oneCCL init before it measures
+# anything -- so the launch count, not the config count, is what predicts
+# walltime. The default ladder is 144 launches, which is easy to submit by
+# accident against a 6-hour window and notice only when it truncates.
+plan_launches() {
+    local n_coll=0 n_node=0 n_rpn=0 c
+    for c in $COLLECTIVES; do n_coll=$((n_coll+1)); done
+    for c in $RPN_RUNGS;   do n_rpn=$((n_rpn+1));   done
+    for c in $NODE_RUNGS; do
+        [ "$c" -le "$ALLOC_NODES" ] 2>/dev/null && n_node=$((n_node+1))
+    done
+    local total=0 s
+    for s in $STAGES; do
+        case "$s" in
+            smoke)  total=$((total + 3)) ;;
+            ladder) total=$((total + REPEATS * n_node * n_rpn * n_coll * 3)) ;;
+            sweep)  total=$((total + REPEATS * n_rpn * n_coll * 3)) ;;
+        esac
+    done
+    echo "$total"
+}
+_planned=$(plan_launches)
+if [ "$_planned" -gt 0 ]; then
+    echo "[run.sh] plan: $_planned mpiexec launch(es) (3 adapters per config)."
+    echo "[run.sh]       Each pays torch+oneCCL init before measuring. Budget for it."
+fi
 echo
 
 # tc-perf-run takes its node count from PBS_NODEFILE (the whole allocation) and
@@ -278,21 +306,21 @@ echo "       ./run.sh analyze    # plots + regression reports"
 echo "=============================================================="
 
 # --- BATCH ------------------------------------------------------------------
-# To convert this to a qsub script, prepend directives ABOVE the shebang line's
-# neighbours -- PBS reads them from the top of the file, before the first
-# non-comment line -- and pick the stages via the STAGES env var:
+# Already done: jobs/sunspot.pbs is this script with Sunspot PBS directives on
+# top. Submit from the repo root (it finds the repo via $PBS_O_WORKDIR):
 #
-#     #!/bin/bash
-#     #PBS -N tcperf-ladder
-#     #PBS -l select=4
-#     #PBS -l walltime=06:00:00
-#     #PBS -l filesystems=home:tegu
-#     #PBS -q workq
-#     #PBS -A datascience
-#     #PBS -j oe
-#     cd "$PBS_O_WORKDIR"
-#     STAGES="preflight ladder" ./run.sh
+#     qsub jobs/sunspot.pbs
+#     qsub -l select=8 -l walltime=08:00:00 jobs/sunspot.pbs
+#     qsub -v STAGES="preflight smoke check" jobs/sunspot.pbs
 #
-# Note that jobs/smoke.pbs and jobs/sweep.pbs in this repo carry AURORA values
-# (-q debug/prod, -l filesystems=home:flare). They are not right for Sunspot as
-# written; this file's directives above are.
+# The qsub command line beats the directives in the file, so one job file
+# covers every node count. Every knob above works there too, via -v (PBS splits
+# that list on commas, so a value may contain spaces but never a comma).
+#
+# The directives are in a separate file rather than at the top of this one so
+# that this script stays convenient interactively, where you run it repeatedly,
+# one stage at a time. jobs/sunspot.pbs is a thin wrapper; the behaviour still
+# lives here.
+#
+# jobs/smoke.pbs and jobs/sweep.pbs predate it and carry AURORA values
+# (-q debug/prod, -l filesystems=home:flare) -- wrong for Sunspot as written.
