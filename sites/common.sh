@@ -27,13 +27,51 @@ tcperf_detect_site() {
     if [ -n "${TCPERF_SITE:-}" ]; then
         echo "$TCPERF_SITE"; return
     fi
-    local fqdn
+    local fqdn short
     fqdn="$(hostname -f 2>/dev/null || hostname)"
+    short="${fqdn%%.*}"
+
+    # 1. A qualified name settles it outright. Login nodes answer this way.
     case "$fqdn" in
-        *.sunspot.alcf.anl.gov|sunspot-*) echo sunspot ;;
-        *.aurora.alcf.anl.gov|aurora-*|x4*) echo aurora ;;
-        *) echo generic ;;
+        *.sunspot.alcf.anl.gov|sunspot-*) echo sunspot; return ;;
+        *.aurora.alcf.anl.gov|aurora-*)   echo aurora;  return ;;
     esac
+
+    # 2. COMPUTE nodes do not: they answer with a bare cabinet name and no
+    #    domain at all, so step 1 misses every one of them. That is how this
+    #    used to land on `generic` — which carries an EMPTY HSN suffix and
+    #    1 tile/node, i.e. a silently broken multi-node run. tc-perf-run and
+    #    tc-perf-env both detect the site on a compute node, so this is the
+    #    normal path, not an edge case.
+    #
+    #    Cabinet prefixes OBSERVED so far: Sunspot x1921*, Aurora x4305*.
+    #    That is the whole basis for the two rules below — it is a heuristic,
+    #    not a documented guarantee, and a prefix collision would send a run to
+    #    the wrong HSN domain. Two things keep that cheap: step 3 catches any
+    #    prefix we have no rule for, and the job script should export
+    #    TCPERF_SITE anyway (step 0), which makes detection a safety net rather
+    #    than the mechanism. Deliberately no DNS here: tc-perf-env sources this
+    #    once per rank, and a lookup per rank is a DNS storm at job start.
+    case "$short" in
+        x1*) echo sunspot; return ;;
+        x4*) echo aurora;  return ;;
+    esac
+
+    # 3. An ALCF-shaped name with a cabinet prefix we have no rule for: ask DNS
+    #    which machine claims its HSN address. Definitive when it answers.
+    #    Gated on the x<digit> shape so an unknown host never pays a DNS
+    #    timeout just to be told it is `generic`.
+    case "$short" in
+        x[0-9]*)
+            local m
+            for m in sunspot aurora; do
+                if getent hosts "${short}-hsn0.hsn.cm.${m}.alcf.anl.gov" >/dev/null 2>&1; then
+                    echo "$m"; return
+                fi
+            done ;;
+    esac
+
+    echo generic
 }
 
 # --- defaults, overridable by the site profile ------------------------------
@@ -42,6 +80,9 @@ tcperf_detect_site() {
 : "${TCPERF_DEFAULT_RPN:=12}"
 : "${TCPERF_MASTER_PORT:=29500}"
 
+# Remember whether the caller chose the site or we guessed it — the generic
+# warning below fires only on a guess.
+TCPERF_SITE_EXPLICIT="${TCPERF_SITE:+1}"
 TCPERF_SITE="$(tcperf_detect_site)"
 export TCPERF_SITE
 
@@ -52,6 +93,17 @@ if [ -r "$_tcperf_profile" ]; then
 else
     echo "tc-perf: warning: no site profile for '$TCPERF_SITE' ($_tcperf_profile)" >&2
     echo "tc-perf:          continuing with generic defaults; set TCPERF_SITE to override" >&2
+fi
+
+# Falling back to `generic` used to be SILENT, because sites/generic.sh exists
+# and is readable — so the branch above had nothing to complain about. But
+# generic carries an empty HSN suffix and 1 tile/node: a multi-node run under
+# it either fails to rendezvous or quietly measures one rank per node. Say so.
+# Only when generic was *guessed*: TCPERF_SITE=generic is a deliberate choice.
+if [ "$TCPERF_SITE" = generic ] && [ -z "${TCPERF_SITE_EXPLICIT:-}" ]; then
+    echo "tc-perf: warning: site detected as 'generic' on $(hostname) — no HSN suffix," >&2
+    echo "tc-perf:          ${TCPERF_TILES_PER_NODE} tile(s)/node. Multi-node runs will misbehave." >&2
+    echo "tc-perf:          Export TCPERF_SITE=sunspot (or aurora) if that is wrong." >&2
 fi
 
 # --- helpers ----------------------------------------------------------------

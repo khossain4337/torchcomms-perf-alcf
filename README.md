@@ -116,7 +116,16 @@ $EDITOR sites/mymachine.sh        # HSN suffix, tiles/node, module load, CCL def
 TCPERF_SITE=mymachine ./bin/tc-perf-doctor
 ```
 
-Detection is by hostname in `sites/common.sh`; `TCPERF_SITE` overrides it.
+Detection is by hostname in `sites/common.sh`, in three steps: a qualified
+domain (login nodes), then the cabinet prefix (`x1*` Sunspot, `x4*` Aurora —
+compute nodes answer with a bare name and no domain), then a DNS probe of the
+HSN address for an ALCF-shaped name with no matching prefix. Unresolved falls
+back to `generic`, which now *warns*, because its empty HSN suffix and
+1 tile/node silently break a multi-node run.
+
+`TCPERF_SITE` overrides all of it. **Export it in batch scripts** — the cabinet
+prefixes are observed, not guaranteed, so detection is best treated as a safety
+net rather than the mechanism.
 
 The one value worth getting right is `TCPERF_HSN_SUFFIX`, which turns a bare
 nodename from `PBS_NODEFILE` into a rendezvous address. On Aurora:
