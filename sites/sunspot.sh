@@ -8,6 +8,27 @@
 # Bare nodenames from PBS_NODEFILE are not routable over the HSN without this.
 TCPERF_HSN_SUFFIX="-hsn0.hsn.cm.sunspot.alcf.anl.gov"
 
+# Rendezvous (MASTER_ADDR) goes over the MANAGEMENT network, not the fabric.
+#
+#   x1921c1s0b0n0-hsn0.hsn.cm.sunspot.alcf.anl.gov -> 10.126.0.101     (CXI)
+#   x1921c1s0b0n0.hostmgmt.cm.sunspot.alcf.anl.gov -> 10.126.192.27    (mgmt)
+#
+# Both are single-A, so the usual "avoid multi-homed names" rule does NOT
+# choose between them -- and reasoning from it is what put the -hsn0 form here
+# originally. What settles it is evidence: the .hostmgmt form is the one that
+# has ever completed a multi-node torchcomms bootstrap on this machine
+# (run_integration_test.sh, 2 nodes x 12, logs/N2_R12_2026-08-05-180711, and
+# again at 48 ranks on 2026-08-26). The -hsn0 form hangs -- every rank reaches
+# the XCCL UniqueID exchange and none completes it, with no error and no
+# timeout.
+#
+# This costs no bandwidth: MASTER_ADDR carries the UniqueID handshake only,
+# once, at init. Collective payload goes over CXI via oneCCL
+# (CCL_ATL_TRANSPORT=mpi -> MPICH -> libfabric cxi), which is confirmed by
+# arithmetic -- 27.8 GB/s measured at 64 MiB is 222x the 0.125 GB/s management
+# link, so the data demonstrably was not on it.
+TCPERF_RDZV_SUFFIX=".hostmgmt.cm.sunspot.alcf.anl.gov"
+
 # 6 PVC cards x 2 tiles, with ZE_FLAT_DEVICE_HIERARCHY=FLAT below.
 TCPERF_TILES_PER_NODE=12
 TCPERF_DEFAULT_RPN=12

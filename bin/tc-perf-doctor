@@ -23,7 +23,7 @@ echo
 # --- 1. site ----------------------------------------------------------------
 echo "[site]"
 if [ -r "$TCPERF_ROOT/sites/${TCPERF_SITE}.sh" ]; then
-    ok "profile: $TCPERF_SITE (hsn suffix '${TCPERF_HSN_SUFFIX:-none}', ${TCPERF_TILES_PER_NODE} tiles/node)"
+    ok "profile: $TCPERF_SITE (hsn '${TCPERF_HSN_SUFFIX:-none}', rdzv '${TCPERF_RDZV_SUFFIX:-none}', ${TCPERF_TILES_PER_NODE} tiles/node)"
 else
     warn "site detected as '$TCPERF_SITE' with no profile — set TCPERF_SITE or add sites/${TCPERF_SITE}.sh"
 fi
@@ -141,11 +141,25 @@ if [ -n "${PBS_NODEFILE:-}" ] && [ -r "$PBS_NODEFILE" ]; then
     if getent hosts "$master" >/dev/null 2>&1; then
         naddr=$(getent hosts "$master" | wc -l)
         if [ "$naddr" -eq 1 ]; then ok "master resolves: $master"
-        else warn "master $master resolves to $naddr addresses — rendezvous may be flaky.
-        Check TCPERF_HSN_SUFFIX in sites/${TCPERF_SITE}.sh (prefer the -hsn0 form)."; fi
+        else
+            # Multi-homed. Worth saying, but NOT worth prescribing a fix: the
+            # bare .hsn.cm form on Aurora answers with 8 addresses and is the
+            # correct suffix there. The old text here told you to "prefer the
+            # -hsn0 form", which is wrong on Aurora and hangs on Sunspot.
+            warn "master $master resolves to $naddr addresses (one per NIC).
+        Expected on Aurora's bare .hsn.cm form. If rendezvous hangs rather than
+        errors, try TCPERF_RDZV_SUFFIX in sites/${TCPERF_SITE}.sh."
+        fi
     else
+        # The doubled-domain case lands here: appending to a nodefile entry that
+        # PBS already qualified yields a name DNS has never heard of. That is
+        # the 48-rank hang (2026-08-26) -- it is fixed in tcperf_reachable, and
+        # this check is the backstop.
         bad "master address does not resolve: $master
-        Fix TCPERF_HSN_SUFFIX in sites/${TCPERF_SITE}.sh"
+        nodefile head: $(head -n1 "$PBS_NODEFILE")
+        Fix TCPERF_RDZV_SUFFIX in sites/${TCPERF_SITE}.sh. An unresolvable
+        MASTER_ADDR does not error at runtime -- every rank reaches the XCCL
+        UniqueID exchange and none completes it, so the job hangs silently."
     fi
 else
     warn "not in a PBS allocation — tc-perf-run will assume a single node"

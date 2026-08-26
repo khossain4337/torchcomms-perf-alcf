@@ -6,7 +6,13 @@
 #
 # A site profile is expected to set (or leave at the default):
 #   TCPERF_HSN_SUFFIX      suffix appended to a bare nodename to reach it over
-#                          the high-speed network (empty = use the name as-is)
+#                          the high-speed network (empty = use the name as-is).
+#                          NOT used for rendezvous -- see the next entry.
+#   TCPERF_RDZV_SUFFIX     suffix for the MASTER_ADDR rendezvous address.
+#                          Defaults to TCPERF_HSN_SUFFIX, which is wrong on
+#                          Sunspot and Aurora: those profiles set it to the
+#                          management network. Rendezvous is a control-plane
+#                          TCP handshake, not a data path.
 #   TCPERF_TILES_PER_NODE  accelerators visible per node with the hierarchy
 #                          setting below (12 on PVC with FLAT)
 #   TCPERF_DEFAULT_RPN     ranks per node when the caller does not say
@@ -95,6 +101,12 @@ else
     echo "tc-perf:          continuing with generic defaults; set TCPERF_SITE to override" >&2
 fi
 
+# Rendezvous suffix defaults to the HSN one, so a site profile written before
+# this distinction existed keeps its old behaviour instead of silently losing
+# its suffix. MUST come after the profile is sourced, or the profile's own
+# TCPERF_RDZV_SUFFIX would be clobbered.
+: "${TCPERF_RDZV_SUFFIX:=$TCPERF_HSN_SUFFIX}"
+
 # Falling back to `generic` used to be SILENT, because sites/generic.sh exists
 # and is readable — so the branch above had nothing to complain about. But
 # generic carries an empty HSN suffix and 1 tile/node: a multi-node run under
@@ -108,15 +120,36 @@ fi
 
 # --- helpers ----------------------------------------------------------------
 
-# Turn a bare nodename into something every rank can reach. Never call this
-# with `hostname` from inside a per-rank wrapper: each rank would elect itself
-# as master. Derive it once, in the outer job script, from PBS_NODEFILE.
+# Turn a nodefile entry into a rendezvous address every rank can reach. Never
+# call this with `hostname` from inside a per-rank wrapper: each rank would
+# elect itself as master. Derive it once, from PBS_NODEFILE.
+#
+# STRIP FIRST, THEN APPEND. PBS_NODEFILE on Sunspot does not hold bare
+# nodenames -- it holds names that are ALREADY qualified, and already point at
+# the fabric interface:
+#
+#     x1921c1s0b0n0-hsn0.hsn.cm.sunspot.alcf.anl.gov
+#
+# The old body passed those straight through on the `*.*` branch. That never
+# produced a doubled name, so it looked correct -- but it handed back the -hsn0
+# address, and rendezvous on -hsn0 is exactly the failure this function has to
+# avoid. See TCPERF_RDZV_SUFFIX in the site profile for why.
+#
+# Cutting at the first dot and dropping -hsn0 recovers the bare nodename, which
+# makes the result identical whether the nodefile is qualified or not -- so a
+# site whose nodefile holds bare names is unaffected.
 tcperf_reachable() {
-    local h="$1"
-    case "$h" in
-        *.*) echo "$h" ;;                       # already qualified
-        *)   echo "${h}${TCPERF_HSN_SUFFIX}" ;;
-    esac
+    local h="$1" n
+
+    # No suffix configured (sites/generic.sh) means we have nothing better to
+    # offer than the name we were handed -- so hand it back whole. Stripping
+    # here would turn a perfectly good qualified nodefile entry into a bare
+    # name that may not resolve.
+    [ -z "${TCPERF_RDZV_SUFFIX:-}" ] && { echo "$h"; return; }
+
+    n="${h%%.*}"                                # drop any domain PBS added
+    n="${n%-hsn0}"                              # and the fabric-interface tag
+    echo "${n}${TCPERF_RDZV_SUFFIX}"
 }
 
 # Node count and master address from the PBS allocation.
