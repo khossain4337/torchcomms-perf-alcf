@@ -13,23 +13,24 @@
 
 export TZ='/usr/share/zoneinfo/US/Central'
 
-BENCH_DIR=/lus/tegu/projects/datasets/software/testing/torchcomm_example/torchcomms-perf-alcf
-PERF_DIR=${BENCH_DIR}/perf_standalone
-OUT_DIR=${BENCH_DIR}/results/minimal_$(date +%Y-%m-%d-%H%M%S)
+export BENCH_DIR=/lus/tegu/projects/datasets/software/testing/torchcomm_example/torchcomms-perf-alcf
+export PERF_DIR=${BENCH_DIR}/perf_standalone
+export OUT_DIR=${BENCH_DIR}/results/minimal_$(date +%Y-%m-%d-%H%M%S)
 
-COLLECTIVE=all_reduce
-MIN_SIZE=1024
-MAX_SIZE=67108864
-ITERS=100
-WARMUP=20
-SYNC_INTERVAL=1
+export COLLECTIVE=all_reduce
+export MIN_SIZE=1024
+export MAX_SIZE=67108864
+export ITERS=100
+export WARMUP=20
+export SYNC_INTERVAL=1
 
 NNODES=$(wc -l < $PBS_NODEFILE)
-NRANKS_PER_NODE=12
+export NRANKS_PER_NODE=12
 let NRANKS=${NNODES}*${NRANKS_PER_NODE}
+export NRANKS
 
-MASTER_ADDR=$(head -n 1 $PBS_NODEFILE)-hsn0.hsn.cm.sunspot.alcf.anl.gov
-MASTER_PORT=2345
+export MASTER_ADDR=$(head -n 1 $PBS_NODEFILE)-hsn0.hsn.cm.sunspot.alcf.anl.gov
+export MASTER_PORT=2345
 
 export WORLD_SIZE=${NRANKS}
 export PALS_WORLD_SIZE=${NRANKS}
@@ -61,87 +62,158 @@ export ZE_AFFINITY_MASK="0,1,2,3,4,5,6,7,8,9,10,11"
 
 mkdir -p ${OUT_DIR}
 
-RANK_ENV=${BENCH_DIR}/rank_env_minimal.sh
 
-cat > ${RANK_ENV} <<'EOF'
-#!/bin/bash
-export RANK=${PALS_RANKID:-${PMIX_RANK:-${PMI_RANK:-}}}
-export LOCAL_RANK=${PALS_LOCAL_RANKID:-}
-export WORLD_SIZE=${WORLD_SIZE:-${PALS_WORLD_SIZE:-}}
+mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer -envall \
+    --cpu-bind ${CPU_AFFINITY} \
+    -genv MASTER_ADDR ${MASTER_ADDR} \
+    -genv MASTER_PORT ${MASTER_PORT} \
+    -genv WORLD_SIZE ${NRANKS} \
+    -genv PALS_WORLD_SIZE ${NRANKS} \
+    -genv TORCHCOMM_SIZE ${NRANKS} \
+    -genv TORCHCOMM_LOCAL_SIZE ${NRANKS_PER_NODE} \
+    -genv CCL_LOCAL_SIZE ${NRANKS_PER_NODE} \
+    bash -lc '
+        export RANK=${PALS_RANKID:-${PMIX_RANK}}
+        export LOCAL_RANK=${PALS_LOCAL_RANKID}
+        export WORLD_SIZE='"${NRANKS}"'
 
-export TORCHCOMM_RANK=${RANK}
-export TORCHCOMM_SIZE=${WORLD_SIZE}
-export TORCHCOMM_LOCAL_RANK=${LOCAL_RANK}
-export TORCHCOMM_LOCAL_SIZE=${TORCHCOMM_LOCAL_SIZE:-${CCL_LOCAL_SIZE:-}}
+        export TORCHCOMM_RANK=${RANK}
+        export TORCHCOMM_SIZE='"${NRANKS}"'
+        export TORCHCOMM_LOCAL_RANK=${PALS_LOCAL_RANKID}
+        export TORCHCOMM_LOCAL_SIZE='"${NRANKS_PER_NODE}"'
 
-export CCL_LOCAL_RANK=${LOCAL_RANK}
-export CCL_LOCAL_SIZE=${CCL_LOCAL_SIZE:-${TORCHCOMM_LOCAL_SIZE:-}}
+        export CCL_LOCAL_RANK=${PALS_LOCAL_RANKID}
+        export CCL_LOCAL_SIZE='"${NRANKS_PER_NODE}"'
 
-unset TORCHCOMM_XCCL_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD
+        export MASTER_ADDR='"${MASTER_ADDR}"'
+        export MASTER_PORT='"${MASTER_PORT}"'
 
-if [ -z "${RANK}" ]; then
-    echo "rank_env: RANK empty on $(hostname): PALS_RANKID/PMIX_RANK/PMI_RANK all unset" >&2
-    env | grep -E '^(PMI|PALS)' | sort >&2
-    exit 1
-fi
-if [ -z "${WORLD_SIZE}" ]; then
-    echo "rank_env: WORLD_SIZE empty on $(hostname): pass -env PALS_WORLD_SIZE=N" >&2
-    env | grep -E '^(PMI|PALS)' | sort >&2
-    exit 1
-fi
-if [ -z "${LOCAL_RANK}" ]; then
-    echo "rank_env: LOCAL_RANK empty on $(hostname): PALS_LOCAL_RANKID unset" >&2
-    env | grep -E '^(PMI|PALS)' | sort >&2
-    exit 1
-fi
+        unset TORCHCOMM_XCCL_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD
 
-exec "$@"
-EOF
-chmod +x ${RANK_ENV}
+        export CCL_OP_SYNC=0
+        export CCL_ATL_SYNC_COLL=0
 
-mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer --cpu-bind ${CPU_AFFINITY} \
-    -env MASTER_ADDR=${MASTER_ADDR} \
-    -env MASTER_PORT=${MASTER_PORT} \
-    -env WORLD_SIZE=${NRANKS} \
-    -env PALS_WORLD_SIZE=${NRANKS} \
-    -env TORCHCOMM_SIZE=${NRANKS} \
-    -env TORCHCOMM_LOCAL_SIZE=${NRANKS_PER_NODE} \
-    -env CCL_LOCAL_SIZE=${NRANKS_PER_NODE} \
-    ${RANK_ENV} \
-    python ${PERF_DIR}/collective_perf_test.py ${COLLECTIVE} \
-    --min-size ${MIN_SIZE} --max-size ${MAX_SIZE} \
-    --iters ${ITERS} --warmup ${WARMUP} \
-    --sync-interval ${SYNC_INTERVAL} \
-    --csv --output-dir ${OUT_DIR}/torchcomms
+        if [ "${RANK}" = "0" ]; then
+            echo "[rank0] TORCHCOMM_RANK=$TORCHCOMM_RANK TORCHCOMM_SIZE=$TORCHCOMM_SIZE TORCHCOMM_LOCAL_RANK=$TORCHCOMM_LOCAL_RANK TORCHCOMM_LOCAL_SIZE=$TORCHCOMM_LOCAL_SIZE" >&2
+            echo "[rank0] RANK=$RANK WORLD_SIZE=$WORLD_SIZE LOCAL_RANK=$LOCAL_RANK CCL_LOCAL_SIZE=$CCL_LOCAL_SIZE" >&2
+            echo "[rank0] MASTER=$MASTER_ADDR:$MASTER_PORT" >&2
+        fi
+        for v in TORCHCOMM_RANK TORCHCOMM_SIZE TORCHCOMM_LOCAL_RANK LOCAL_RANK \
+                 PERF_DIR OUT_DIR COLLECTIVE MASTER_ADDR; do
+            if [ -z "${!v}" ]; then
+                echo "FATAL rank=${PALS_RANKID:-?} on $(hostname): $v is empty" >&2
+                env | grep -E "^(PMI|PALS|TORCHCOMM)" | sort >&2
+                exit 1
+            fi
+        done
 
-mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer --cpu-bind ${CPU_AFFINITY} \
-    -env MASTER_ADDR=${MASTER_ADDR} \
-    -env MASTER_PORT=${MASTER_PORT} \
-    -env WORLD_SIZE=${NRANKS} \
-    -env PALS_WORLD_SIZE=${NRANKS} \
-    -env TORCHCOMM_SIZE=${NRANKS} \
-    -env TORCHCOMM_LOCAL_SIZE=${NRANKS_PER_NODE} \
-    -env CCL_LOCAL_SIZE=${NRANKS_PER_NODE} \
-    ${RANK_ENV} \
-    python ${PERF_DIR}/collective_perf_test.py ${COLLECTIVE} --c10d \
-    --min-size ${MIN_SIZE} --max-size ${MAX_SIZE} \
-    --iters ${ITERS} --warmup ${WARMUP} \
-    --sync-interval ${SYNC_INTERVAL} \
-    --csv --output-dir ${OUT_DIR}/c10d
+        exec python ${PERF_DIR}/collective_perf_test.py ${COLLECTIVE} \
+            --min-size ${MIN_SIZE} --max-size ${MAX_SIZE} \
+            --iters ${ITERS} --warmup ${WARMUP} \
+            --sync-interval ${SYNC_INTERVAL} \
+            --csv --output-dir ${OUT_DIR}/torchcomms
+    '
 
-mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer --cpu-bind ${CPU_AFFINITY} \
-    -env MASTER_ADDR=${MASTER_ADDR} \
-    -env MASTER_PORT=${MASTER_PORT} \
-    -env WORLD_SIZE=${NRANKS} \
-    -env PALS_WORLD_SIZE=${NRANKS} \
-    -env TORCHCOMM_SIZE=${NRANKS} \
-    -env TORCHCOMM_LOCAL_SIZE=${NRANKS_PER_NODE} \
-    -env CCL_LOCAL_SIZE=${NRANKS_PER_NODE} \
-    ${RANK_ENV} \
-    python ${PERF_DIR}/collective_perf_test.py ${COLLECTIVE} --c10d-torchcomms \
-    --min-size ${MIN_SIZE} --max-size ${MAX_SIZE} \
-    --iters ${ITERS} --warmup ${WARMUP} \
-    --sync-interval ${SYNC_INTERVAL} \
-    --csv --output-dir ${OUT_DIR}/c10d_torchcomms
+mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer -envall \
+    --cpu-bind ${CPU_AFFINITY} \
+    -genv MASTER_ADDR ${MASTER_ADDR} \
+    -genv MASTER_PORT ${MASTER_PORT} \
+    -genv WORLD_SIZE ${NRANKS} \
+    -genv PALS_WORLD_SIZE ${NRANKS} \
+    -genv TORCHCOMM_SIZE ${NRANKS} \
+    -genv TORCHCOMM_LOCAL_SIZE ${NRANKS_PER_NODE} \
+    -genv CCL_LOCAL_SIZE ${NRANKS_PER_NODE} \
+    bash -lc '
+        export RANK=${PALS_RANKID:-${PMIX_RANK}}
+        export LOCAL_RANK=${PALS_LOCAL_RANKID}
+        export WORLD_SIZE='"${NRANKS}"'
+
+        export TORCHCOMM_RANK=${RANK}
+        export TORCHCOMM_SIZE='"${NRANKS}"'
+        export TORCHCOMM_LOCAL_RANK=${PALS_LOCAL_RANKID}
+        export TORCHCOMM_LOCAL_SIZE='"${NRANKS_PER_NODE}"'
+
+        export CCL_LOCAL_RANK=${PALS_LOCAL_RANKID}
+        export CCL_LOCAL_SIZE='"${NRANKS_PER_NODE}"'
+
+        export MASTER_ADDR='"${MASTER_ADDR}"'
+        export MASTER_PORT='"${MASTER_PORT}"'
+
+        unset TORCHCOMM_XCCL_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD
+
+        export CCL_OP_SYNC=0
+        export CCL_ATL_SYNC_COLL=0
+
+        if [ "${RANK}" = "0" ]; then
+            echo "[rank0] TORCHCOMM_RANK=$TORCHCOMM_RANK TORCHCOMM_SIZE=$TORCHCOMM_SIZE TORCHCOMM_LOCAL_RANK=$TORCHCOMM_LOCAL_RANK TORCHCOMM_LOCAL_SIZE=$TORCHCOMM_LOCAL_SIZE" >&2
+            echo "[rank0] RANK=$RANK WORLD_SIZE=$WORLD_SIZE LOCAL_RANK=$LOCAL_RANK CCL_LOCAL_SIZE=$CCL_LOCAL_SIZE" >&2
+            echo "[rank0] MASTER=$MASTER_ADDR:$MASTER_PORT" >&2
+        fi
+        for v in TORCHCOMM_RANK TORCHCOMM_SIZE TORCHCOMM_LOCAL_RANK LOCAL_RANK \
+                 PERF_DIR OUT_DIR COLLECTIVE MASTER_ADDR; do
+            if [ -z "${!v}" ]; then
+                echo "FATAL rank=${PALS_RANKID:-?} on $(hostname): $v is empty" >&2
+                env | grep -E "^(PMI|PALS|TORCHCOMM)" | sort >&2
+                exit 1
+            fi
+        done
+
+        exec python ${PERF_DIR}/collective_perf_test.py ${COLLECTIVE} --c10d \
+            --min-size ${MIN_SIZE} --max-size ${MAX_SIZE} \
+            --iters ${ITERS} --warmup ${WARMUP} \
+            --sync-interval ${SYNC_INTERVAL} \
+            --csv --output-dir ${OUT_DIR}/c10d
+    '
+
+mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer -envall \
+    --cpu-bind ${CPU_AFFINITY} \
+    -genv MASTER_ADDR ${MASTER_ADDR} \
+    -genv MASTER_PORT ${MASTER_PORT} \
+    -genv WORLD_SIZE ${NRANKS} \
+    -genv PALS_WORLD_SIZE ${NRANKS} \
+    -genv TORCHCOMM_SIZE ${NRANKS} \
+    -genv TORCHCOMM_LOCAL_SIZE ${NRANKS_PER_NODE} \
+    -genv CCL_LOCAL_SIZE ${NRANKS_PER_NODE} \
+    bash -lc '
+        export RANK=${PALS_RANKID:-${PMIX_RANK}}
+        export LOCAL_RANK=${PALS_LOCAL_RANKID}
+        export WORLD_SIZE='"${NRANKS}"'
+
+        export TORCHCOMM_RANK=${RANK}
+        export TORCHCOMM_SIZE='"${NRANKS}"'
+        export TORCHCOMM_LOCAL_RANK=${PALS_LOCAL_RANKID}
+        export TORCHCOMM_LOCAL_SIZE='"${NRANKS_PER_NODE}"'
+
+        export CCL_LOCAL_RANK=${PALS_LOCAL_RANKID}
+        export CCL_LOCAL_SIZE='"${NRANKS_PER_NODE}"'
+
+        export MASTER_ADDR='"${MASTER_ADDR}"'
+        export MASTER_PORT='"${MASTER_PORT}"'
+
+        unset TORCHCOMM_XCCL_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD
+
+        export CCL_OP_SYNC=0
+        export CCL_ATL_SYNC_COLL=0
+
+        if [ "${RANK}" = "0" ]; then
+            echo "[rank0] TORCHCOMM_RANK=$TORCHCOMM_RANK TORCHCOMM_SIZE=$TORCHCOMM_SIZE TORCHCOMM_LOCAL_RANK=$TORCHCOMM_LOCAL_RANK TORCHCOMM_LOCAL_SIZE=$TORCHCOMM_LOCAL_SIZE" >&2
+            echo "[rank0] RANK=$RANK WORLD_SIZE=$WORLD_SIZE LOCAL_RANK=$LOCAL_RANK CCL_LOCAL_SIZE=$CCL_LOCAL_SIZE" >&2
+            echo "[rank0] MASTER=$MASTER_ADDR:$MASTER_PORT" >&2
+        fi
+        for v in TORCHCOMM_RANK TORCHCOMM_SIZE TORCHCOMM_LOCAL_RANK LOCAL_RANK \
+                 PERF_DIR OUT_DIR COLLECTIVE MASTER_ADDR; do
+            if [ -z "${!v}" ]; then
+                echo "FATAL rank=${PALS_RANKID:-?} on $(hostname): $v is empty" >&2
+                env | grep -E "^(PMI|PALS|TORCHCOMM)" | sort >&2
+                exit 1
+            fi
+        done
+
+        exec python ${PERF_DIR}/collective_perf_test.py ${COLLECTIVE} --c10d-torchcomms \
+            --min-size ${MIN_SIZE} --max-size ${MAX_SIZE} \
+            --iters ${ITERS} --warmup ${WARMUP} \
+            --sync-interval ${SYNC_INTERVAL} \
+            --csv --output-dir ${OUT_DIR}/c10d_torchcomms
+    '
 
 echo "results: ${OUT_DIR}"
