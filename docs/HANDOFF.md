@@ -1,5 +1,11 @@
 # HANDOFF
 
+> **SUPERSEDED for status — see [`HANDOFF_2026-08-26.md`](HANDOFF_2026-08-26.md).**
+> The 48-rank bootstrap hang is fixed and real data exists as of 2026-08-26.
+> This file remains accurate on tooling, patches, and the upstream pin; its
+> "no production data yet" framing and its claim that the ladder is usable are
+> both out of date.
+
 Resume point for this work. Written 2026-08-20. Read this first, then
 `../README.md` for how to actually run things.
 
