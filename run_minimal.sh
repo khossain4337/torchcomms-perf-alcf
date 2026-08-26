@@ -29,16 +29,41 @@ export NRANKS_PER_NODE=12
 let NRANKS=${NNODES}*${NRANKS_PER_NODE}
 export NRANKS
 
-# Management network, NOT -hsn0. The only multi-node torchcomms bootstrap that
-# has ever completed on Sunspot -- run_integration_test.sh, 2 nodes x 12 ranks,
-# logs/N2_R12_2026-08-05-180711 -- used the .hostmgmt form on port 29500. The
-# -hsn0 form resolves to the CXI fabric (10.126.0.x); .hostmgmt resolves to the
-# management net (10.126.192.x). The XCCL UniqueID exchange is a control-plane
-# TCP rendezvous, and pointing it at the fabric address is what we are testing
-# as the cause of the 48-rank hang: every rank reaches the exchange, none
-# completes it. Revert this pair together if that turns out to be wrong.
-export MASTER_ADDR=$(head -n 1 $PBS_NODEFILE).hostmgmt.cm.sunspot.alcf.anl.gov
+# Rendezvous address. Two separate things go wrong here, so build it in steps.
+#
+# 1. STRIP FIRST. PBS_NODEFILE on Sunspot holds names that are ALREADY
+#    qualified -- "x1921c1s0b0n0-hsn0.hsn.cm.sunspot.alcf.anl.gov", not the
+#    bare "x1921c1s0b0n0". Appending a suffix to that produces a doubled name
+#    that resolves to nothing:
+#
+#      x1921c1s0b0n0-hsn0.hsn...gov-hsn0.hsn...gov      <- what we shipped
+#      x1921c1s0b0n0-hsn0.hsn...gov.hostmgmt.cm...gov   <- and then this
+#
+#    Both fail DNS. A rendezvous address that does not resolve is exactly the
+#    48-rank hang: every rank reaches the UniqueID exchange, none completes it.
+#    So cut at the first dot and drop any -hsn0 to recover the bare nodename,
+#    which makes this correct whether the nodefile is qualified or not.
+#
+# 2. Management network, NOT -hsn0. The only multi-node torchcomms bootstrap
+#    that has ever completed here -- run_integration_test.sh, 2 nodes x 12
+#    ranks, logs/N2_R12_2026-08-05-180711 -- rendezvoused at
+#    x1921c1s2b0n0.hostmgmt.cm.sunspot.alcf.anl.gov:29500. .hostmgmt is the
+#    management net (10.126.192.x); -hsn0 is the CXI fabric (10.126.0.x). The
+#    UniqueID exchange is a control-plane TCP rendezvous, so it wants the
+#    former.
+_master_node=$(head -n 1 $PBS_NODEFILE)
+_master_node=${_master_node%%.*}          # x1921c1s0b0n0-hsn0.hsn...  -> x1921c1s0b0n0-hsn0
+_master_node=${_master_node%-hsn0}        # x1921c1s0b0n0-hsn0         -> x1921c1s0b0n0
+export MASTER_ADDR=${_master_node}.hostmgmt.cm.sunspot.alcf.anl.gov
 export MASTER_PORT=29500
+
+# Fail loudly here rather than hanging for the whole walltime out on the nodes.
+if ! getent hosts "${MASTER_ADDR}" >/dev/null 2>&1; then
+    echo "FATAL: MASTER_ADDR=${MASTER_ADDR} does not resolve" >&2
+    echo "       nodefile head: $(head -n 1 $PBS_NODEFILE)" >&2
+    exit 1
+fi
+echo "[master] ${MASTER_ADDR}:${MASTER_PORT} -> $(getent hosts "${MASTER_ADDR}" | awk '{print $1}')"
 
 export WORLD_SIZE=${NRANKS}
 export PALS_WORLD_SIZE=${NRANKS}
