@@ -83,6 +83,12 @@ export TEST_DEVICE="${TEST_DEVICE:-xpu}"
 export CCL_LOCAL_RANK="$_local_rank"
 export CCL_LOCAL_SIZE="${CCL_LOCAL_SIZE:-${OMPI_COMM_WORLD_LOCAL_SIZE:-${I_MPI_LOCAL_SIZE:-${PMI_LOCAL_SIZE:-${RPN:-$_world}}}}}"
 
+# torchcomms wants its own name for the same number. Set from CCL_LOCAL_SIZE
+# above so the two can never disagree -- oneCCL's view of node topology and
+# torchcomms' view describing different layouts would be a bad way to spend an
+# afternoon.
+export TORCHCOMM_LOCAL_SIZE="${TORCHCOMM_LOCAL_SIZE:-$CCL_LOCAL_SIZE}"
+
 # This build REJECTS "tcp"/"pmix" here; unset lets it take the working "auto"
 # path. Inherited from test2_job_script.sh, where we first hit it.
 unset TORCHCOMM_XCCL_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD 2>/dev/null || true

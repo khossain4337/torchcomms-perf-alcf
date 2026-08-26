@@ -31,7 +31,11 @@ let NRANKS=${NNODES}*${NRANKS_PER_NODE}
 MASTER_ADDR=$(head -n 1 $PBS_NODEFILE)-hsn0.hsn.cm.sunspot.alcf.anl.gov
 MASTER_PORT=2345
 
+export WORLD_SIZE=${NRANKS}
 export PALS_WORLD_SIZE=${NRANKS}
+export TORCHCOMM_SIZE=${NRANKS}
+export TORCHCOMM_LOCAL_SIZE=${NRANKS_PER_NODE}
+export CCL_LOCAL_SIZE=${NRANKS_PER_NODE}
 
 module add frameworks
 
@@ -63,8 +67,16 @@ cat > ${RANK_ENV} <<'EOF'
 #!/bin/bash
 export RANK=${PALS_RANKID:-${PMIX_RANK:-${PMI_RANK:-}}}
 export LOCAL_RANK=${PALS_LOCAL_RANKID:-}
-export CCL_LOCAL_RANK=${LOCAL_RANK}
 export WORLD_SIZE=${WORLD_SIZE:-${PALS_WORLD_SIZE:-}}
+
+export TORCHCOMM_RANK=${RANK}
+export TORCHCOMM_SIZE=${WORLD_SIZE}
+export TORCHCOMM_LOCAL_RANK=${LOCAL_RANK}
+export TORCHCOMM_LOCAL_SIZE=${TORCHCOMM_LOCAL_SIZE:-${CCL_LOCAL_SIZE:-}}
+
+export CCL_LOCAL_RANK=${LOCAL_RANK}
+export CCL_LOCAL_SIZE=${CCL_LOCAL_SIZE:-${TORCHCOMM_LOCAL_SIZE:-}}
+
 unset TORCHCOMM_XCCL_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD
 
 if [ -z "${RANK}" ]; then
@@ -90,8 +102,10 @@ chmod +x ${RANK_ENV}
 mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer --cpu-bind ${CPU_AFFINITY} \
     -env MASTER_ADDR=${MASTER_ADDR} \
     -env MASTER_PORT=${MASTER_PORT} \
-    -env PALS_WORLD_SIZE=${NRANKS} \
     -env WORLD_SIZE=${NRANKS} \
+    -env PALS_WORLD_SIZE=${NRANKS} \
+    -env TORCHCOMM_SIZE=${NRANKS} \
+    -env TORCHCOMM_LOCAL_SIZE=${NRANKS_PER_NODE} \
     -env CCL_LOCAL_SIZE=${NRANKS_PER_NODE} \
     ${RANK_ENV} \
     python ${PERF_DIR}/collective_perf_test.py ${COLLECTIVE} \
@@ -103,8 +117,10 @@ mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer --cpu-bind ${CPU_A
 mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer --cpu-bind ${CPU_AFFINITY} \
     -env MASTER_ADDR=${MASTER_ADDR} \
     -env MASTER_PORT=${MASTER_PORT} \
-    -env PALS_WORLD_SIZE=${NRANKS} \
     -env WORLD_SIZE=${NRANKS} \
+    -env PALS_WORLD_SIZE=${NRANKS} \
+    -env TORCHCOMM_SIZE=${NRANKS} \
+    -env TORCHCOMM_LOCAL_SIZE=${NRANKS_PER_NODE} \
     -env CCL_LOCAL_SIZE=${NRANKS_PER_NODE} \
     ${RANK_ENV} \
     python ${PERF_DIR}/collective_perf_test.py ${COLLECTIVE} --c10d \
@@ -116,8 +132,10 @@ mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer --cpu-bind ${CPU_A
 mpiexec -n ${NRANKS} -ppn ${NRANKS_PER_NODE} -l --line-buffer --cpu-bind ${CPU_AFFINITY} \
     -env MASTER_ADDR=${MASTER_ADDR} \
     -env MASTER_PORT=${MASTER_PORT} \
-    -env PALS_WORLD_SIZE=${NRANKS} \
     -env WORLD_SIZE=${NRANKS} \
+    -env PALS_WORLD_SIZE=${NRANKS} \
+    -env TORCHCOMM_SIZE=${NRANKS} \
+    -env TORCHCOMM_LOCAL_SIZE=${NRANKS_PER_NODE} \
     -env CCL_LOCAL_SIZE=${NRANKS_PER_NODE} \
     ${RANK_ENV} \
     python ${PERF_DIR}/collective_perf_test.py ${COLLECTIVE} --c10d-torchcomms \
