@@ -19,6 +19,7 @@ qsub -A <Project> jobs/smoke.pbs
 **Panagiotis Kourdis** of Intel is the owner of the PR that is the basis of this work
 - `panagiotis.kourdis@intel.com` 
 - [pkourdis](https://github.com/pkourdis)
+
 **Tanima Dey** of Intel have done thorough testing on the harness
 - `tanima.dey@intel.com`
 
