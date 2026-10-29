@@ -94,6 +94,9 @@ if [ -z "${TORCHCOMMS_BUILD_TAG:-}" ]; then
 fi
 export TORCHCOMMS_BUILD_TAG
 
+PREINIT=()
+[ "${CCL_KVS_MODE:-}" = mpi ] && PREINIT=("$TCPERF_ROOT/bin/tc-perf-mpi-first")
+
 # Record exactly what produced these numbers, next to the numbers themselves.
 # Without this, a CSV six months from now is unattributable.
 {
@@ -114,6 +117,7 @@ export TORCHCOMMS_BUILD_TAG
     echo "cpu_bind=${CPU_AFFINITY:-<none>}"
     echo "ccl_worker_affinity=${CCL_WORKER_AFFINITY:-<unset>}"
     echo "ze_affinity_mask=${ZE_AFFINITY_MASK:-<unset>}"
+    echo "kvs_mode=${CCL_KVS_MODE:-<unset>} mpi_preinit=${#PREINIT[@]}"
     echo "--- ccl/ze env ---"
     # CAUTION: this is the environment of THIS script, not of the ranks.
     # bin/tc-perf-env overrides CCL_OP_SYNC / CCL_ATL_SYNC_COLL per-rank, after
@@ -174,7 +178,7 @@ for adapter in $ADAPTERS; do
     CMD=(mpiexec --pmi=pmix -n "$NRANKS" -ppn "$RPN" -l --line-buffer
          "${BIND[@]}"
          "$TCPERF_ROOT/bin/tc-perf-env"
-         python "$PERF_DIR/collective_perf_test.py" "$COLLECTIVE" "${FLAG[@]}"
+         python "${PREINIT[@]}" "$PERF_DIR/collective_perf_test.py" "$COLLECTIVE" "${FLAG[@]}"
          --min-size "$MIN_SIZE" --max-size "$MAX_SIZE"
          --iters "$ITERS" --warmup "$WARMUP"
          --sync-interval "$SYNC_INTERVAL"
