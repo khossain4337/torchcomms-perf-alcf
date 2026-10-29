@@ -16,35 +16,28 @@
 # The bare form is what works on Aurora, per the user (2026-08-26).
 TCPERF_HSN_SUFFIX=".hsn.cm.aurora.alcf.anl.gov"
 
-# Rendezvous suffix: LEFT UNSET DELIBERATELY, so it falls back to
-# TCPERF_HSN_SUFFIX above.
-#
-# Sunspot needs .hostmgmt for MASTER_ADDR (see the long note in sites/sunspot.sh
-# -- the fabric address hangs the XCCL UniqueID exchange there). Whether Aurora
-# needs the same is UNKNOWN: nothing has ever been benchmarked on Aurora through
-# this repo, and the -hsn0 lesson above is precisely that Aurora's naming does
-# not follow Sunspot's. Guessing .hostmgmt here would repeat the mistake in the
-# other direction.
-#
-# x4305c0s0b0n0.hostmgmt.cm.aurora.alcf.anl.gov does resolve (10.115.34.38), so
-# if the first real Aurora job hangs at bootstrap, this is the one line to try:
-#
-#     TCPERF_RDZV_SUFFIX=".hostmgmt.cm.aurora.alcf.anl.gov"
-#
-# tc-perf-doctor resolves whatever is in effect before anything is launched.
+# Rendezvous over HSN; .hostmgmt also works (both PASS at 2 nodes, 2026-10-29).
+# HSN chosen for full scale. `:=` keeps a per-run override:
+#     TCPERF_RDZV_SUFFIX=".hostmgmt.cm.aurora.alcf.anl.gov" bin/tc-perf-smoke
+: "${TCPERF_RDZV_SUFFIX:=$TCPERF_HSN_SUFFIX}"
 
 TCPERF_TILES_PER_NODE=12
 TCPERF_DEFAULT_RPN=12
 
-# `module avail frameworks` on Aurora (Aug 2026) offers 2025.3.1 and 2025.2.0;
-# bare `frameworks` resolves to the default. Pin a version from the job script
-# via TCPERF_MODULE_LOAD when you need reproducibility across a maintenance.
+# Default resolves to frameworks/2026.1.0 (2026-10-29). Pin via
+# TCPERF_MODULE_LOAD for reproducibility across a maintenance.
 TCPERF_MODULE_LOAD='module add frameworks'
 
 export TEST_BACKEND="${TEST_BACKEND:-xccl}"
 export TEST_DEVICE="${TEST_DEVICE:-xpu}"
 
 export ZE_FLAT_DEVICE_HIERARCHY="${ZE_FLAT_DEVICE_HIERARCHY:-FLAT}"
+
+# Node layout = Sunspot (lscpu + xpu-smi, 2026-10-29); reasoning in sites/sunspot.sh.
+export CPU_AFFINITY="${CPU_AFFINITY:-list:4-7:8-11:12-15:16-19:20-23:24-27:56-59:60-63:64-67:68-71:72-75:76-79}"
+export CCL_WORKER_AFFINITY="${CCL_WORKER_AFFINITY:-42,43,44,45,46,47,94,95,96,97,98,99}"
+# Keep all 12 visible: patch 0001 picks the tile by local rank.
+export ZE_AFFINITY_MASK="${ZE_AFFINITY_MASK:-0,1,2,3,4,5,6,7,8,9,10,11}"
 export CCL_ATL_TRANSPORT="${CCL_ATL_TRANSPORT:-mpi}"
 export CCL_KVS_MODE="${CCL_KVS_MODE:-pmi}"
 export CCL_PROCESS_LAUNCHER="${CCL_PROCESS_LAUNCHER:-pmix}"

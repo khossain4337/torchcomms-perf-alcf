@@ -156,14 +156,20 @@ tcperf_reachable() {
 # Sets NNODES and MASTER_ADDR. Falls back to a single local node off-allocation
 # so `tc-perf-doctor` and dry runs work on a login node.
 tcperf_topology() {
+    local name ip
     if [ -n "${PBS_NODEFILE:-}" ] && [ -r "${PBS_NODEFILE}" ]; then
         NNODES=$(wc -l < "$PBS_NODEFILE")
-        MASTER_ADDR="$(tcperf_reachable "$(head -n 1 "$PBS_NODEFILE")")"
+        name="$(tcperf_reachable "$(head -n 1 "$PBS_NODEFILE")")"
     else
         NNODES=1
-        MASTER_ADDR="$(tcperf_reachable "$(hostname)")"
-        echo "tc-perf: note: no PBS_NODEFILE; assuming 1 node ($MASTER_ADDR)" >&2
+        name="$(tcperf_reachable "$(hostname)")"
+        echo "tc-perf: note: no PBS_NODEFILE; assuming 1 node ($name)" >&2
     fi
+    # Resolve once here so ranks never hit DNS at scale; a multi-homed name
+    # (Aurora bare .hsn: 8 A records) is pinned to its first address. Keeps the
+    # name if it does not resolve, so --dry-run still works on a login node.
+    ip="$(getent hosts "$name" | awk '{print $1; exit}')"
+    MASTER_ADDR="${ip:-$name}"
     export NNODES MASTER_ADDR
 }
 
